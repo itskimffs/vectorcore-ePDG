@@ -54,6 +54,9 @@ const (
 	// Detected and logged only, to inform whether implementing the full
 	// mechanism is worth the effort for this deployment's UE fleet.
 	notifyIKEv2MultipleBearerPDNConnectivity uint16 = 42011
+	// RFC 5998 §5: EAP_ONLY_AUTHENTICATION notify, sent by the initiator in
+	// message 3 when it does not want public-key-based responder auth.
+	notifyEAPOnlyAuthentication uint16 = 16417
 )
 
 // rawPayload implements message.IKEPayload for pre-encoded payload bytes.
@@ -187,7 +190,11 @@ func (s *Server) handleAuthRound1(conn *net.UDPConn, remote *net.UDPAddr, sa *ik
 		if n.NotifyMessageType == notifyIKEv2MultipleBearerPDNConnectivity {
 			s.log.Info("IKE_AUTH round1: UE supports IKEv2 multiple bearer PDN connectivity (not implemented by this ePDG)",
 				"imsi", imsi, "remote", remote)
-			break
+			// break
+		}
+		if n.NotifyMessageType == notifyEAPOnlyAuthentication {
+			s.log.Info("IKE_AUTH round1: UE requested EAP-only authentication (RFC 5998)", "imsi", imsi, "remote", remote)
+			sa.eapOnly = true
 		}
 	}
 
@@ -725,22 +732,24 @@ func (s *Server) sendEAPResponse(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 	if includeID {
 		epdgID := s.epdgIdentity()
 		inner.BuildIdentificationResponder(message.ID_FQDN, []byte(epdgID))
-		if len(s.certDER) > 0 {
-			inner.BuildCertificate(certEncodingX509, s.certDER)
-		}
 
-		idrBytes := buildIDAuthBytes(message.ID_FQDN, []byte(epdgID))
-		macedIDR := prfMAC(sa.saKey.prf, sa.saKey.SK_pr, idrBytes)
-		responderSigned := concat(sa.initRespRaw, sa.nonceI, macedIDR)
-		sig, err := s.computeCertAUTH(responderSigned)
-		if err != nil {
-			s.log.Error("IKE_AUTH: signature AUTH failed", "err", err, "remote", remote)
-			s.sendAuthNotify(conn, remote, sa, msgID, message.AUTHENTICATION_FAILED, natt)
-			return
+		if !sa.eapOnly {
+			if len(s.certDER) > 0 {
+				inner.BuildCertificate(certEncodingX509, s.certDER)
+			}
+
+			idrBytes := buildIDAuthBytes(message.ID_FQDN, []byte(epdgID))
+			macedIDR := prfMAC(sa.saKey.prf, sa.saKey.SK_pr, idrBytes)
+			responderSigned := concat(sa.initRespRaw, sa.nonceI, macedIDR)
+			sig, err := s.computeCertAUTH(responderSigned)
+			if err != nil {
+				s.log.Error("IKE_AUTH: signature AUTH failed", "err", err, "remote", remote)
+				s.sendAuthNotify(conn, remote, sa, msgID, message.AUTHENTICATION_FAILED, natt)
+				return
+			}
+			inner.BuildAuthentication(message.RSADigitalSignature, sig)
 		}
-		inner.BuildAuthentication(message.RSADigitalSignature, sig)
 	}
-
 	inner = append(inner, &rawPayload{typ: message.TypeEAP, data: eapPayload})
 
 	if err := s.sendEncryptedResponse(conn, remote, sa, message.IKE_AUTH, msgID, inner, natt); err != nil {

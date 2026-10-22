@@ -191,6 +191,24 @@ var dhGroup15 = &modpGroup{
 	byteLen:   384,
 }
 
+// RFC 2409 Second Oakley Group (Group 2, 1024-bit MODP) - legacy,
+// kept for interoperability with real-world handsets whose default
+// (no MNO-specific carrier config loaded) IKE proposal offers only
+// this group. Deprecated by 3GPP TS 133.210 since 2016.
+var dhGroup2 = &modpGroup{
+	id: message.DH_1024_BIT_MODP,
+	prime: mustParseBig("FFFFFFFFFFFFFFFFC90FDAA22168C234" +
+		"C4C6628B80DC1CD129024E088A67CC74" +
+		"020BBEA63B139B22514A08798E3404DD" +
+		"EF9519B3CD3A431B302B0A6DF25F1437" +
+		"4FE1356D6D51C245E485B576625E7EC6" +
+		"F44C42E9A637ED6B0BFF5CB6F406B7ED" +
+		"EE386BFB5A899FA5AE9F24117C4B1FE6" +
+		"49286651ECE65381FFFFFFFFFFFFFFFF"),
+	generator: big.NewInt(2),
+	byteLen:   128,
+}
+
 func dhGroupByID(id uint16) dhGroup {
 	switch id {
 	case message.DH_2048_BIT_MODP:
@@ -201,6 +219,8 @@ func dhGroupByID(id uint16) dhGroup {
 		return ecdh256Group
 	case dh384RandomECP:
 		return ecdh384Group
+	case message.DH_1024_BIT_MODP:
+		return dhGroup2
 	}
 	return nil
 }

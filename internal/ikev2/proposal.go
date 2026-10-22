@@ -59,6 +59,7 @@ var supportedIKEProposals = []negotiatedProposal{
 	{dhGroup14, encrAesCbc256, integSha512_256, prfSha512},
 	{dhGroup15, encrAesCbc256, integSha512_256, prfSha512},
 	{dhGroup14, encrAesCbc128, integSha1_96, prfSha1},
+	{dhGroup2, encrAesCbc128, integSha1_96, prfSha1},
 }
 
 // selectIKEProposal walks the initiator's SA payload and returns the first
