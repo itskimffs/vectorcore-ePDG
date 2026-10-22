@@ -4,6 +4,7 @@ package xfrm
 // Called after IKE_AUTH CHILD SA establishment to install ESP SAs in the kernel.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -276,6 +277,8 @@ func buildSAs(p ChildSAParams, localIP, remoteIP net.IP) (*netlink.XfrmState, *n
 			DstPort: p.NATTDstPort, // we send to UE's port
 		}
 	}
+	r := reqidFor(p)
+	inbound.Reqid, outbound.Reqid = r, r
 	return inbound, outbound
 }
 
@@ -320,6 +323,8 @@ func buildPolicies(p ChildSAParams, localIP, remoteIP net.IP) (*netlink.XfrmPoli
 		Ifid:     int(p.IfID),
 		Tmpls:    []netlink.XfrmPolicyTmpl{tmplOut},
 	}
+	r := reqidFor(p)
+	inPol.Tmpls[0].Reqid, fwdPol.Tmpls[0].Reqid, outPol.Tmpls[0].Reqid = r, r, r
 	return inPol, fwdPol, outPol
 }
 
@@ -432,4 +437,22 @@ func resolveXFRMIPs(local, remote net.IP) (net.IP, net.IP, error) {
 		}
 	}
 	return nil, nil, fmt.Errorf("xfrm: mismatched or unsupported address families (local=%v remote=%v)", local, remote)
+}
+
+// reqidFor derives a per-UE XFRM reqid from the UE inner address (PAA/32).
+// Without a unique reqid, outbound policies for different UEs behind the same
+// NAT (same outer IP) have identical templates (src, dst, proto, mode, if_id),
+// and the kernel resolves all of them to the same outbound SA. PAA is stable
+// across rekey and MOBIKE, so every call path derives the same reqid.
+// Falls back to 0 (previous behaviour) when no /32 IPv4 PAA is known.
+func reqidFor(p ChildSAParams) int {
+	if p.RemoteTS == nil {
+		return 0
+	}
+	ones, bits := p.RemoteTS.Mask.Size()
+	ip4 := p.RemoteTS.IP.To4()
+	if ip4 == nil || ones != 32 || bits != 32 {
+		return 0
+	}
+	return int(binary.BigEndian.Uint32(ip4))
 }

@@ -81,6 +81,7 @@ type ikeSA struct {
 	peerESPSPI  uint32 // UE's inbound ESP SPI from SAi2
 	localESPSPI uint32 // ePDG's inbound ESP SPI for SAr2
 	cpWantsIP   bool   // UE requested INTERNAL_IP4_ADDRESS via CFG_REQUEST
+	eapOnly     bool   // RFC 5998: UE sent N(EAP_ONLY_AUTHENTICATION) in round 1
 
 	// Pending CHILD SA during rekey window (RFC 7296 §2.8): populated after we send
 	// our CREATE_CHILD_SA response, cleared when UE sends DELETE for old or new SPI.
