@@ -1,3 +1,8 @@
+// Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
+// the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKE_AUTH handler — EAP-AKA per RFC 7296 §2.16 and 3GPP TS 24.302 §8.2.3.
@@ -107,6 +112,9 @@ func (s *Server) handleIKEAuth(conn *net.UDPConn, remote *net.UDPAddr, pkt []byt
 		return
 	}
 	sa.remoteAddr = remote
+	// Follow the port the UE uses for IKE_AUTH (RFC 7296 §2.23): after moving to UDP 4500
+	// the UE sends ESP in UDP, so the SA must use UDP encapsulation from here on.
+	sa.natT = natt
 	sa.lastSeen = time.Now()
 
 	innerType, plain, err := decryptSK(sa.saKey, pkt)

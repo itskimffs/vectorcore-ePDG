@@ -1,3 +1,8 @@
+// Modified by itskimffs (2026-10), see NOTICE: NAT detection in IKE_SA_INIT hashes SPIr = 0
+// (RFC 7296 §2.23).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKE_SA_INIT exchange handler — RFC 7296 §1.2.
@@ -156,7 +161,11 @@ func (s *Server) handleIKESAInit(conn *net.UDPConn, remote *net.UDPAddr, pkt []b
 	// match what we'd compute for the remote address, NAT is present.
 	natDetected := natt // already on 4500 → NAT known from the start
 	if !natDetected {
-		natDetected = detectNAT(notifyPayloads, remote, spiI, spiR)
+		// RFC 7296 §2.23: in IKE_SA_INIT the initiator computes NAT_DETECTION_SOURCE_IP
+		// with SPIr = 0 (it does not know the responder SPI yet). Hashing the generated
+		// SPIr made every UE look NATed, so the SA got espinudp while a UE on the same
+		// L2 sends plain ESP (dropped as XfrmInStateMismatch).
+		natDetected = detectNAT(notifyPayloads, remote, spiI, 0)
 	}
 
 	// Derive all IKE SA keying material (RFC 7296 §2.14).

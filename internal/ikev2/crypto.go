@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: RFC 2409 DH group 2 (1024-bit MODP).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKEv2 crypto layer.

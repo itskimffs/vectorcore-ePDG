@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication state (eapOnly).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKE SA state.

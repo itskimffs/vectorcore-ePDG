@@ -1,0 +1,17 @@
+vectorcore-ePDG
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is a fork of github.com/vectorcore-mobile/vectorcore-ePDG (upstream commit 76a929c),
+maintained by itskimffs. The BPF header files under internal/gtpu/bpf/headers/ are adapted from
+the eUPF project by Edgecom LLC, used under the Apache License 2.0 (see README.md).
+
+Modifications in this fork (itskimffs, 2026-10); each modified file carries a notice:
+- RFC 2409 DH group 2 (1024-bit MODP) in IKEv2 proposals
+  (internal/ikev2/crypto.go, internal/ikev2/proposal.go)
+- RFC 5998 EAP-only authentication: no CERT/AUTH payload when the UE requests it
+  (internal/ikev2/auth.go, internal/ikev2/sa.go)
+- unique XFRM reqid per UE derived from the PAA, so several UEs behind the same NAT get their own
+  SA (internal/xfrm/xfrm.go)
+- NAT-T: NAT detection in IKE_SA_INIT hashes SPIr = 0 as the initiator does (RFC 7296 2.23), and
+  the SA follows the UE's IKE_AUTH port for UDP encapsulation (internal/ikev2/init.go,
+  internal/ikev2/auth.go)
