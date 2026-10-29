@@ -12,3 +12,6 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   (internal/ikev2/auth.go, internal/ikev2/sa.go)
 - unique XFRM reqid per UE derived from the PAA, so several UEs behind the same NAT get their own
   SA (internal/xfrm/xfrm.go)
+- NAT-T: NAT detection in IKE_SA_INIT hashes SPIr = 0 as the initiator does (RFC 7296 2.23), and
+  the SA follows the UE's IKE_AUTH port for UDP encapsulation (internal/ikev2/init.go,
+  internal/ikev2/auth.go)
