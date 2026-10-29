@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: unique XFRM reqid per UE (derived from the PAA) so several UEs behind one NAT get their own SA.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package xfrm
 
 // Linux XFRM netlink — kernel IPsec SA and policy programming.

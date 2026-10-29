@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: DH group 2 proposal (AES-CBC-128 / HMAC-SHA1-96 / PRF-SHA1).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // SA proposal negotiation — RFC 7296 §3.3.

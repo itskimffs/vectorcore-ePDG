@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION)).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKE_AUTH handler — EAP-AKA per RFC 7296 §2.16 and 3GPP TS 24.302 §8.2.3.
