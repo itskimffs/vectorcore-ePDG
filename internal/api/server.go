@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: Prometheus metrics at /metrics.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 // Package api implements the read-only Huma administrative API described in
 // docs/api_handoff.md. It only reads from the session store and the GTP-U/
 // XFRM managers — it must never call any state-mutating method on them.
@@ -70,14 +74,7 @@ func NewServer(cfg config.APIConfig, sessions sessionStore, gtpuMgr gtpuStore, b
 func (s *Server) Start(ctx context.Context) error {
 	s.startedAt = time.Now()
 
-	mux := http.NewServeMux()
-	humaConfig := huma.DefaultConfig("VectorCore ePDG", s.build.Version)
-	humaAPI := humago.New(mux, humaConfig)
-
-	s.registerHealth(humaAPI)
-	s.registerClients(humaAPI)
-	s.registerSessions(humaAPI)
-	s.registerStats(humaAPI)
+	mux := s.newMux()
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.ListenAddress, s.cfg.ListenPort)
 	s.httpSrv = &http.Server{
@@ -97,6 +94,21 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// newMux builds the route table: the Huma API under /api/v1 and the
+// Prometheus endpoint at /metrics.
+func (s *Server) newMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	humaConfig := huma.DefaultConfig("VectorCore ePDG", s.build.Version)
+	humaAPI := humago.New(mux, humaConfig)
+
+	s.registerHealth(humaAPI)
+	s.registerClients(humaAPI)
+	s.registerSessions(humaAPI)
+	s.registerStats(humaAPI)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	return mux
 }
 
 // Stop gracefully shuts down the HTTP listener.

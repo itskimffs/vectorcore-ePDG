@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package config
 
 import (
@@ -32,6 +36,9 @@ type APIConfig struct {
 	Enabled       bool
 	ListenAddress string
 	ListenPort    int
+	// MetricsIMSILabel adds an imsi label to the per-session and per-bearer
+	// gauges on /metrics (one time series per subscriber; off by default).
+	MetricsIMSILabel bool
 }
 
 type PGWDiscoveryConfig struct {
@@ -351,6 +358,8 @@ func setValue(cfg *Config, section, key, value string) error {
 			cfg.API.ListenAddress = value
 		case "listen_port":
 			return setInt(value, &cfg.API.ListenPort, section, key)
+		case "metrics_imsi_label":
+			return setBool(value, &cfg.API.MetricsIMSILabel, section, key)
 		}
 	default:
 		return fmt.Errorf("unknown config section %q", section)

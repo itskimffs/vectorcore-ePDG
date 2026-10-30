@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package session
 
 import (
@@ -156,6 +160,7 @@ type S2BContext struct {
 	LocalControlTEID uint32
 	LocalUserTEID    uint32
 	EBI              uint8
+	QCI              uint8 // default bearer QCI
 	PGWRecovery      uint8
 }
 

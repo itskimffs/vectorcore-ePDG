@@ -1,4 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6).
+// Default bearer QCI from the Create Session Response (Prometheus metrics).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -39,6 +40,7 @@ type CreateSessionResult struct {
 	LocalControlTEID uint32
 	LocalUserTEID    uint32
 	EBI              uint8
+	QCI              uint8 // default bearer QCI: Bearer Level QoS in the response, else the requested QCI
 	PGWRecovery      uint8
 	PGWControlIP     net.IP
 	PGWUserIP        net.IP
@@ -385,6 +387,7 @@ func (c *Client) CreateSession(ctx context.Context, req CreateSessionRequest) (*
 		"pgw_user_teid", result.PGWUserTEID,
 		"local_user_teid", result.LocalUserTEID,
 		"ebi", result.EBI,
+		"qci", result.QCI,
 		"pgw_recovery", result.PGWRecovery,
 	)
 	c.logPCO("S2b PCO", req.IMSI, req.APN, result.ResponsePCO)
@@ -573,6 +576,14 @@ func (c *Client) parseCreateSessionResponseFor(resp message, localControl, local
 				result.PGWUserIP = ip
 			}
 		}
+		if qos, ok := findIE(children, ieBearerQoS, 0); ok && len(qos.Payload) > 1 {
+			result.QCI = qos.Payload[1]
+		}
+	}
+	// The PGW includes Bearer Level QoS in Bearer Context Created only when it
+	// differs from the one in the request (TS 29.274 Table 7.2.2-2).
+	if result.QCI == 0 {
+		result.QCI = defaultBearerQCI
 	}
 	if result.PGWControlTEID == 0 {
 		return nil, fmt.Errorf("S2b Create Session Response missing PGW control TEID")

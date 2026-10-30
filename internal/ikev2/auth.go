@@ -1,6 +1,7 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
 // PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1); IPv6 PDN connections (CFG_REPLY, TS);
 // the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23).
+// Default bearer QCI in the S2b context (Prometheus metrics).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -585,6 +586,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 					LocalControlTEID: r.LocalControlTEID,
 					LocalUserTEID:    r.LocalUserTEID,
 					EBI:              r.EBI,
+					QCI:              r.QCI,
 					PGWRecovery:      r.PGWRecovery,
 				}
 				_ = sess.Transition(session.StateS2BAccepted)

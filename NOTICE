@@ -37,3 +37,10 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   the dedicated bearer for inner IPv6 with rules keyed by the UE's /64 prefix
   (internal/gtpu/dataplane.go, internal/gtpu/tc_loader.go, internal/gtpu/bpf/tc_gtpu_encap.c,
   internal/gtpu/tft_test.go, internal/gtpu/ipv6_tft_test.go)
+- Prometheus metrics on GET /metrics of the admin API: IKE/CHILD SAs, PDN connections by APN and
+  PDN type, bearers by APN, PDN type, QCI and bearer type, and user-plane packets/bytes by APN, PDN
+  type, QCI and direction; optional imsi label (api.metrics_imsi_label). The default bearer's QCI is
+  taken from the Create Session Response (TS 29.274 7.2.2) (internal/api/metrics.go,
+  internal/api/server.go, internal/gtpu/metrics.go, internal/gtpu/dataplane.go,
+  internal/s2b/client.go, internal/session/types.go, internal/ikev2/auth.go,
+  internal/config/config.go, config/epdg.yaml, docs/API.md and tests)
