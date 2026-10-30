@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: unique XFRM reqid per UE (derived from the PAA) so several UEs behind one NAT get their own SA.
+// Modified by itskimffs (2026-10), see NOTICE: unique XFRM reqid per UE (derived from the PAA) so several UEs behind one NAT get their own SA;
+// IPv6 inner traffic over an IPv4 tunnel (IPv6 SA selector, reqid from the IPv6 prefix).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -281,6 +282,12 @@ func buildSAs(p ChildSAParams, localIP, remoteIP net.IP) (*netlink.XfrmState, *n
 			DstPort: p.NATTDstPort, // we send to UE's port
 		}
 	}
+	// Inner IPv6 over an IPv4 (or IPv6) tunnel: the SA selector must carry the
+	// inner family, otherwise the kernel sets it to the outer family
+	// (xfrm_user.c copy_from_user_state) and only that inner family is accepted.
+	if sel := innerSelector(p); sel != nil {
+		inbound.Selector, outbound.Selector = sel, sel
+	}
 	r := reqidFor(p)
 	inbound.Reqid, outbound.Reqid = r, r
 	return inbound, outbound
@@ -454,9 +461,29 @@ func reqidFor(p ChildSAParams) int {
 		return 0
 	}
 	ones, bits := p.RemoteTS.Mask.Size()
-	ip4 := p.RemoteTS.IP.To4()
-	if ip4 == nil || ones != 32 || bits != 32 {
+	if ip4 := p.RemoteTS.IP.To4(); ip4 != nil {
+		if ones != 32 || bits != 32 {
+			return 0
+		}
+		return int(binary.BigEndian.Uint32(ip4))
+	}
+	// IPv6 PAA: the /64 prefix identifies the UE. Fold it into 31 bits with the
+	// top bit set, so it cannot collide with an IPv4 PAA from a private range.
+	ip6 := p.RemoteTS.IP.To16()
+	if ip6 == nil || bits != 128 || ones == 0 {
 		return 0
 	}
-	return int(binary.BigEndian.Uint32(ip4))
+	h := binary.BigEndian.Uint32(ip6[0:4]) ^ binary.BigEndian.Uint32(ip6[4:8])
+	h = h*2654435761 ^ h>>15
+	return int(h | 0x80000000)
+}
+
+// innerSelector returns an SA selector for IPv6 inner traffic (any to any), or
+// nil for IPv4 inner traffic, which keeps the previous behaviour.
+func innerSelector(p ChildSAParams) *netlink.XfrmPolicy {
+	if p.RemoteTS == nil || p.RemoteTS.IP.To4() != nil || p.RemoteTS.IP.To16() == nil {
+		return nil
+	}
+	any6 := &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+	return &netlink.XfrmPolicy{Src: any6, Dst: any6}
 }

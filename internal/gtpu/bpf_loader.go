@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package gtpu
 
 import (
@@ -111,17 +115,23 @@ func newBPFDataplane(iface string, localGTPUIP net.IP, mode string, maxEntries i
 // pgwAddr is the PGW GTP-U address this TEID was negotiated with over
 // GTPv2-C/S2b — the only outer source XDP will accept G-PDUs for this TEID
 // from when outer-peer validation is enabled (TS 29.281 §4.3.0; finding #8).
+//
+// For an IPv6 PDN connection paa is the UE's IPv6 address; its /64 prefix is
+// stored and inner IPv6 destinations are checked against it.
 func (d *BPFDataplane) AddTEID(teid uint32, paa, pgwAddr net.IP) error {
-	ip4 := paa.To4()
-	if ip4 == nil {
-		return fmt.Errorf("bpf: PAA must be IPv4, got %s", paa)
-	}
 	pgw4 := pgwAddr.To4()
 	if pgw4 == nil {
 		return fmt.Errorf("bpf: PGW address must be IPv4, got %s", pgwAddr)
 	}
 	entry := GtpuDecapTeidEntry{}
-	copy(entry.Paa[:], ip4)
+	if ip4 := paa.To4(); ip4 != nil {
+		copy(entry.Paa[:], ip4)
+	} else if ip6 := paa.To16(); ip6 != nil {
+		copy(entry.Paa6[:], ip6[:8])
+		entry.IsV6 = 1
+	} else {
+		return fmt.Errorf("bpf: invalid PAA %s", paa)
+	}
 	copy(entry.PgwAddr[:], pgw4)
 	if err := d.objs.TeidMap.Put(teid, entry); err != nil {
 		return fmt.Errorf("bpf: teid_map put TEID %d: %w", teid, err)

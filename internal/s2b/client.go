@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package s2b
 
 import (
@@ -24,10 +28,12 @@ type CreateSessionRequest struct {
 	AMBRDownlink uint64
 	Handover     bool   // set Indication IE HI bit (VoLTE→VoWiFi handover, TS 29.274 §8.12)
 	PGWControlIP net.IP // overrides the static pgw_gtpc peer when non-nil (DNS discovery)
+	IPv6         bool   // request PDN type IPv6 instead of IPv4 (UE asked only for INTERNAL_IP6_ADDRESS)
 }
 
 type CreateSessionResult struct {
-	PAA              net.IP
+	PAA              net.IP // IPv4 address, or the IPv6 address (prefix + interface identifier) for PDN type IPv6
+	PAAPrefixLen     uint8  // IPv6 prefix length; 0 for IPv4
 	PGWControlTEID   uint32
 	PGWUserTEID      uint32
 	LocalControlTEID uint32
@@ -311,6 +317,7 @@ func (c *Client) CreateSession(ctx context.Context, req CreateSessionRequest) (*
 	c.log.Info("S2b Create Session Request sent",
 		"imsi", req.IMSI,
 		"apn", req.APN,
+		"pdn_type", pdnTypeName(pdnTypeFor(req)),
 		"handover", req.Handover,
 		"pgw_gtpc", peer.IP,
 		"local_gtpc", c.cfg.GTP.LocalGTPC,
@@ -355,7 +362,7 @@ func (c *Client) CreateSession(ctx context.Context, req CreateSessionRequest) (*
 		)
 		return nil, err
 	}
-	result, err := c.parseCreateSessionResponse(resp, localControl, localUser)
+	result, err := c.parseCreateSessionResponseFor(resp, localControl, localUser, pdnTypeFor(req))
 	if err != nil {
 		c.log.Error("S2b Create Session failed",
 			"imsi", req.IMSI,
@@ -372,6 +379,7 @@ func (c *Client) CreateSession(ctx context.Context, req CreateSessionRequest) (*
 		"imsi", req.IMSI,
 		"apn", req.APN,
 		"paa", result.PAA.String(),
+		"paa_prefix_len", result.PAAPrefixLen,
 		"pgw_control_teid", result.PGWControlTEID,
 		"pgw_control_ip", result.PGWControlIP,
 		"pgw_user_teid", result.PGWUserTEID,
@@ -475,7 +483,7 @@ func (c *Client) createSessionPayload(req CreateSessionRequest, ulKbps, dlKbps, 
 		fteidIE(0, ifaceS2BePDGGTPC, localControl, localGTPC),
 		apnIE(req.APN),
 		uint8IE(ieSelectionMode, 0),
-		paaIPv4RequestIE(),
+		paaRequestIE(pdnTypeFor(req)),
 		ambrIE(ulKbps, dlKbps),
 		bearer,
 		recoveryIE(0),
@@ -488,7 +496,30 @@ func (c *Client) createSessionPayload(req CreateSessionRequest, ulKbps, dlKbps, 
 	return encodeIEs(ies...)
 }
 
+func pdnTypeFor(req CreateSessionRequest) uint8 {
+	if req.IPv6 {
+		return pdnTypeIPv6
+	}
+	return pdnTypeIPv4
+}
+
+func pdnTypeName(t uint8) string {
+	switch t {
+	case pdnTypeIPv4:
+		return "ipv4"
+	case pdnTypeIPv6:
+		return "ipv6"
+	case pdnTypeIPv4v6:
+		return "ipv4v6"
+	}
+	return fmt.Sprintf("unknown(%d)", t)
+}
+
 func (c *Client) parseCreateSessionResponse(resp message, localControl, localUser uint32) (*CreateSessionResult, error) {
+	return c.parseCreateSessionResponseFor(resp, localControl, localUser, pdnTypeIPv4)
+}
+
+func (c *Client) parseCreateSessionResponseFor(resp message, localControl, localUser uint32, pdnType uint8) (*CreateSessionResult, error) {
 	ies, err := decodeIEs(resp.Payload)
 	if err != nil {
 		return nil, err
@@ -511,7 +542,12 @@ func (c *Client) parseCreateSessionResponse(resp message, localControl, localUse
 	if result.ResponseAPCO, err = c.parsePCOIE(ies, ieAPCO); err != nil {
 		return nil, err
 	}
-	if result.PAA == nil {
+	if pdnType == pdnTypeIPv6 {
+		result.PAA, result.PAAPrefixLen = parsePAAIPv6(ies)
+		if result.PAA == nil {
+			return nil, fmt.Errorf("S2b Create Session Response missing IPv6 PAA")
+		}
+	} else if result.PAA == nil {
 		return nil, fmt.Errorf("S2b Create Session Response missing IPv4 PAA")
 	}
 	if _, teid, ip, ok := findFTEIDByInterface(ies, ifaceS2BPGWGTPC, 1, 0); ok {

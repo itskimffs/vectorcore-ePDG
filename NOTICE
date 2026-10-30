@@ -23,3 +23,11 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
 - PDN_TYPE_IPv4_ONLY_ALLOWED Notify in the final IKE_AUTH response when the UE requested both an
   IPv4 address and an IPv6 prefix and only IPv4 is assigned (TS 24.302 7.4.1)
   (internal/ikev2/auth.go, internal/ikev2/sa.go)
+- IPv6 PDN connections: when the UE requests only INTERNAL_IP6_ADDRESS, PDN type IPv6 on S2b,
+  INTERNAL_IP6_ADDRESS and the requested IPv6 DNS/P-CSCF attributes in CFG_REPLY, IPv6 traffic
+  selectors, an IPv6 SA selector over the IPv4 tunnel, and inner IPv6 in the XDP/TC programs keyed
+  by the UE's /64 prefix (TS 24.302 7.2.2/7.4.1, TS 29.274 8.14, RFC 7296 3.15.1)
+  (internal/ikev2/auth.go, internal/ikev2/sa.go, internal/ikev2/inform.go, internal/ikev2/rekey.go,
+  internal/ikev2/paa6.go, internal/s2b/codec.go, internal/s2b/client.go, internal/xfrm/xfrm.go,
+  internal/gtpu/dataplane.go, internal/gtpu/bpf_loader.go, internal/gtpu/tc_loader.go,
+  internal/gtpu/bpf/xdp_gtpu_decap.c, internal/gtpu/bpf/tc_gtpu_encap.c and tests)

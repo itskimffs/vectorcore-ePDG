@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package gtpu
 
 import (
@@ -57,6 +61,9 @@ func newTCDataplane(ifName string, ifID uint32, maxEntries int) (*TCDataplane, e
 		if m, ok := spec.Maps["ue_session_map"]; ok {
 			m.MaxEntries = uint32(maxEntries)
 		}
+		if m, ok := spec.Maps["ue6_session_map"]; ok {
+			m.MaxEntries = uint32(maxEntries)
+		}
 		if m, ok := spec.Maps["tft_rule_map"]; ok {
 			m.MaxEntries = uint32(maxEntries)
 		}
@@ -110,6 +117,9 @@ func (d *TCDataplane) UeSessionMapCount() (int, error) {
 // localIP is the ePDG S2b GTP-U source address.
 // s2bIfindex is the S2b interface index for bpf_redirect_neigh.
 func (d *TCDataplane) AddUESession(paa net.IP, ulTEID uint32, pgwIP, localIP net.IP, s2bIfindex int) error {
+	if paa.To4() == nil && paa.To16() != nil {
+		return d.addUESession6(paa.To16(), ulTEID, pgwIP, localIP, s2bIfindex)
+	}
 	paa4 := paa.To4()
 	pgw4 := pgwIP.To4()
 	loc4 := localIP.To4()
@@ -129,6 +139,29 @@ func (d *TCDataplane) AddUESession(paa net.IP, ulTEID uint32, pgwIP, localIP net
 	copy(entry.LocalIp[:], loc4)
 	if err := d.objs.UeSessionMap.Put(key, entry); err != nil {
 		return fmt.Errorf("tc: ue_session_map put PAA %s: %w", paa4, err)
+	}
+	return nil
+}
+
+// addUESession6 inserts a UE session for an IPv6 PDN connection into
+// ue6_session_map, keyed by the UE's /64 prefix. IPv6 sessions have no TFT
+// rules: uplink goes on the default bearer.
+func (d *TCDataplane) addUESession6(paa6 net.IP, ulTEID uint32, pgwIP, localIP net.IP, s2bIfindex int) error {
+	pgw4 := pgwIP.To4()
+	loc4 := localIP.To4()
+	if pgw4 == nil || loc4 == nil {
+		return fmt.Errorf("tc: AddUESession: PGW and local GTP-U IPs must be IPv4")
+	}
+	var key GtpuEncapIpv6PrefixKey
+	copy(key.Prefix[:], paa6[:8])
+	entry := GtpuEncapUeSessionEntry{
+		UlTeid:     ulTEID,
+		S2bIfindex: uint32(s2bIfindex),
+	}
+	copy(entry.PgwIp[:], pgw4)
+	copy(entry.LocalIp[:], loc4)
+	if err := d.objs.Ue6SessionMap.Put(key, entry); err != nil {
+		return fmt.Errorf("tc: ue6_session_map put PAA %s: %w", paa6, err)
 	}
 	return nil
 }
@@ -228,6 +261,15 @@ func (d *TCDataplane) RemoveBearerCounter(teid uint32) error {
 
 // RemoveUESession deletes the UE session entry for paa. Returns nil if absent.
 func (d *TCDataplane) RemoveUESession(paa net.IP) error {
+	if paa != nil && paa.To4() == nil && paa.To16() != nil {
+		var key GtpuEncapIpv6PrefixKey
+		copy(key.Prefix[:], paa.To16()[:8])
+		err := d.objs.Ue6SessionMap.Delete(key)
+		if err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("tc: ue6_session_map delete PAA %s: %w", paa, err)
+		}
+		return nil
+	}
 	paa4 := paa.To4()
 	if paa4 == nil {
 		return nil

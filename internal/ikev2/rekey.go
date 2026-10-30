@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: lastSeen only after the message is authenticated (RFC 7296 §2.4).
+// Modified by itskimffs (2026-10), see NOTICE: lastSeen only after the message is authenticated (RFC 7296 §2.4); traffic selectors for IPv6 PAAs.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -299,22 +299,13 @@ func (s *Server) handleChildSARekey(conn *net.UDPConn, remote *net.UDPAddr, sa *
 	}
 
 	// Traffic selectors: PAA from session (same as originally negotiated).
-	var remoteTS *net.IPNet
 	var paa net.IP
 	if s.sessions != nil && sa.sessionID != "" {
 		if sess := s.sessions.Get(sa.sessionID); sess != nil && sess.S2B != nil {
-			if p := net.ParseIP(sess.S2B.PAA); p != nil {
-				if p4 := p.To4(); p4 != nil {
-					paa = p4
-					remoteTS = &net.IPNet{IP: p4, Mask: net.CIDRMask(32, 32)}
-				}
-			}
+			paa = net.ParseIP(sess.S2B.PAA)
 		}
 	}
-	if remoteTS == nil {
-		remoteTS = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-	}
-	_, localTS, _ := net.ParseCIDR("0.0.0.0/0")
+	localTS, remoteTS := paaTrafficSelectors(paa)
 
 	// Install new CHILD SA states only — policies already exist from initial negotiation
 	// and don't need to change since the traffic selectors are identical.

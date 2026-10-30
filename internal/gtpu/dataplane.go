@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package gtpu
 
 import (
@@ -55,6 +59,9 @@ const (
 	// rtprotEPDG is the Linux route protocol tag used for all PAA host routes
 	// installed by this process. Allows safe flush of stale routes on startup.
 	rtprotEPDG = 100
+
+	// ipv6PAAPrefixLen is the IPv6 prefix of a PDN connection (TS 23.401 §5.3.1.2.2).
+	ipv6PAAPrefixLen = 64
 )
 
 type Manager struct {
@@ -347,8 +354,11 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		return fmt.Errorf("%s: GTP-U session requires S2b context", stepValidateInput)
 	}
 	paa := net.ParseIP(s2bCtx.PAA)
-	if paa == nil || paa.To4() == nil {
-		return fmt.Errorf("%s: GTP-U session requires IPv4 PAA, got %q", stepValidateInput, s2bCtx.PAA)
+	if paa == nil {
+		return fmt.Errorf("%s: GTP-U session requires an IPv4 or IPv6 PAA, got %q", stepValidateInput, s2bCtx.PAA)
+	}
+	if paa4 := paa.To4(); paa4 != nil {
+		paa = paa4
 	}
 	pgw := s2bCtx.PGWUserIP.To4()
 	if pgw == nil {
@@ -883,9 +893,9 @@ func (m *Manager) syncBearerCounters(dl, ul bearerCounterReader) {
 // inner IP packet XDP_PASS'd after GTP-U decapsulation is forwarded by the
 // kernel and picked up by the XFRM OUT policy (dst=PAA/32) for ESP encryption.
 func (m *Manager) addBPFRoute(paa net.IP) error {
-	ip4 := paa.To4()
-	if ip4 == nil {
-		return fmt.Errorf("addBPFRoute: PAA must be IPv4")
+	dst, err := paaRouteDst(paa)
+	if err != nil {
+		return fmt.Errorf("addBPFRoute: %w", err)
 	}
 	var ifIdx int
 	if m.tc != nil {
@@ -895,15 +905,28 @@ func (m *Manager) addBPFRoute(paa net.IP) error {
 	}
 	route := &netlink.Route{
 		LinkIndex: ifIdx,
-		Dst:       &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)},
+		Dst:       dst,
 		Scope:     netlink.SCOPE_LINK,
 		Protocol:  rtprotEPDG,
 	}
 	if err := netlink.RouteAdd(route); err != nil {
-		return fmt.Errorf("addBPFRoute %s/32: %w", ip4, err)
+		return fmt.Errorf("addBPFRoute %s: %w", dst, err)
 	}
-	m.log.Info("BPF downlink PAA host route added", "paa", ip4.String())
+	m.log.Info("BPF downlink PAA host route added", "paa", dst.String())
 	return nil
+}
+
+// paaRouteDst is the downlink route for a PAA: IPv4 PAA/32, or the IPv6 /64
+// prefix (the UE chooses its own interface identifier in it).
+func paaRouteDst(paa net.IP) (*net.IPNet, error) {
+	if ip4 := paa.To4(); ip4 != nil {
+		return &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}, nil
+	}
+	if ip6 := paa.To16(); ip6 != nil {
+		mask := net.CIDRMask(ipv6PAAPrefixLen, 128)
+		return &net.IPNet{IP: ip6.Mask(mask), Mask: mask}, nil
+	}
+	return nil, fmt.Errorf("invalid PAA %v", paa)
 }
 
 // removeBPFRoute removes the host route installed by addBPFRoute.
@@ -911,8 +934,8 @@ func (m *Manager) removeBPFRoute(paa net.IP) error {
 	if paa == nil {
 		return nil
 	}
-	ip4 := paa.To4()
-	if ip4 == nil {
+	dst, err := paaRouteDst(paa)
+	if err != nil {
 		return nil
 	}
 	var ifIdx int
@@ -923,15 +946,15 @@ func (m *Manager) removeBPFRoute(paa net.IP) error {
 	}
 	route := &netlink.Route{
 		LinkIndex: ifIdx,
-		Dst:       &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)},
+		Dst:       dst,
 		Scope:     netlink.SCOPE_LINK,
 		Protocol:  rtprotEPDG,
 	}
 	if err := netlink.RouteDel(route); err != nil {
-		m.log.Warn("BPF downlink PAA host route remove failed", "paa", ip4.String(), "error", err)
+		m.log.Warn("BPF downlink PAA host route remove failed", "paa", dst.String(), "error", err)
 		return err
 	}
-	m.log.Info("BPF downlink PAA host route removed", "paa", ip4.String())
+	m.log.Info("BPF downlink PAA host route removed", "paa", dst.String())
 	return nil
 }
 
@@ -939,7 +962,7 @@ func (m *Manager) removeBPFRoute(paa net.IP) error {
 // run that crashed or was killed before clean shutdown. Routes are identified by
 // rtprotEPDG so only ePDG-installed routes are touched.
 func (m *Manager) flushOrphanedRoutes() {
-	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4,
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL,
 		&netlink.Route{Protocol: rtprotEPDG},
 		netlink.RT_FILTER_PROTOCOL)
 	if err != nil {
@@ -1130,6 +1153,15 @@ func parsePacketFilterContents(pf *PacketFilter, data []byte) error {
 
 func (m *Manager) syncTCBPFTFTRulesLocked(ds *Session) error {
 	if m.tc == nil || ds == nil {
+		return nil
+	}
+	if ds.PAA.To4() == nil {
+		// IPv6 PDN connection: no uplink TFT rules in TC-BPF yet, uplink uses
+		// the default bearer.
+		if len(buildTCBPFTFTRules(ds)) > 0 {
+			m.log.Warn("TC-BPF TFT rules not supported for IPv6 PDN, uplink on default bearer",
+				"session_id", ds.ID, "paa", ds.PAA.String())
+		}
 		return nil
 	}
 	rules := buildTCBPFTFTRules(ds)
