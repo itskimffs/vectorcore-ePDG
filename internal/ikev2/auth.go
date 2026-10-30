@@ -1,5 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
-// PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1);
+// PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1); IPv6 PDN connections (CFG_REPLY, TS);
 // the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
@@ -235,8 +235,15 @@ func (s *Server) handleAuthRound1(conn *net.UDPConn, remote *net.UDPAddr, sa *ik
 	// the UE is asking the PGW to preserve its existing PDN connection.
 	if pl.cp != nil && pl.cp.ConfigurationType == message.CFG_REQUEST {
 		for _, attr := range pl.cp.ConfigurationAttribute {
-			if attr.Type == message.INTERNAL_IP6_ADDRESS {
+			switch attr.Type {
+			case message.INTERNAL_IP6_ADDRESS:
 				sa.cpWantsIP6 = true
+			case message.INTERNAL_IP6_DNS:
+				sa.cpWantsDNS6 = true
+			case internalIP6PCSCF:
+				sa.cpWantsPCSCF6 = true
+			case attrPCSCF6Private:
+				sa.cpWantsPCSCF6Private = true
 			}
 			if attr.Type == message.INTERNAL_IP4_ADDRESS {
 				sa.cpWantsIP = true
@@ -539,6 +546,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			AMBRDownlink: ambrDL,
 			Handover:     sa.handoverIP != nil,
 			PGWControlIP: pgwControlIP,
+			IPv6:         sa.wantsIPv6PDN(),
 		})
 		cancel()
 		if err != nil {
@@ -553,6 +561,10 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			"imsi", sa.imsi, "paa", paa,
 			"pgw_ctrl_teid", r.PGWControlTEID, "pgw_user_teid", r.PGWUserTEID,
 			"handover", sa.handoverIP != nil)
+		if sa.wantsIPv6PDN() && r.PAAPrefixLen != paaPrefixLen6 {
+			s.log.Warn("IKE_AUTH final: unexpected IPv6 prefix length from PGW, using /64",
+				"imsi", sa.imsi, "prefix_len", r.PAAPrefixLen)
+		}
 		if sa.handoverIP != nil && !paa.Equal(sa.handoverIP) {
 			s.log.Warn("IKE_AUTH final: handover PAA mismatch — PGW assigned different address",
 				"imsi", sa.imsi, "requested", sa.handoverIP, "assigned", paa)
@@ -597,13 +609,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			sa.espProp.encr.KeyLen(), sa.espProp.integKeyLen())
 		encrName, integName, integTrunc := childAlgNames(sa.espProp)
 
-		var remoteTS *net.IPNet
-		if paa4 := paa.To4(); paa4 != nil {
-			remoteTS = &net.IPNet{IP: paa4, Mask: net.CIDRMask(32, 32)}
-		} else {
-			remoteTS = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-		}
-		_, localTS, _ := net.ParseCIDR("0.0.0.0/0")
+		localTS, remoteTS := paaTrafficSelectors(paa)
 
 		xfrmParams := xfrm.ChildSAParams{
 			LocalIP:      sa.localIP,
@@ -707,7 +713,19 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 
 	buildTSResponse(&inner, paa)
 
-	if sa.cpWantsIP && paa != nil {
+	if paa != nil && paa.To4() == nil && sa.cpWantsIP6 {
+		// IPv6 PDN connection: the IPv6 address and the IPv6 attributes the UE asked for.
+		cp := inner.BuildConfiguration(message.CFG_REPLY)
+		cp.ConfigurationAttribute.BuildConfigurationAttribute(
+			message.INTERNAL_IP6_ADDRESS, internalIP6AddressValue(paa))
+		if s2bResult != nil {
+			pcoData := s2bResult.ResponseAPCO
+			if pcoData == nil {
+				pcoData = s2bResult.ResponsePCO
+			}
+			appendIPv6FromPCO(cp, pcoData, sa)
+		}
+	} else if sa.cpWantsIP && paa != nil {
 		cp := inner.BuildConfiguration(message.CFG_REPLY)
 		cp.ConfigurationAttribute.BuildConfigurationAttribute(
 			message.INTERNAL_IP4_ADDRESS, paa.To4())
@@ -718,8 +736,12 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 				pcoData = s2bResult.ResponsePCO
 			}
 			if s.fullCfg != nil {
-				appendDNSFromPCO(cp, pcoData, s.fullCfg.PCO)
-				appendPCSCFFromPCO(cp, pcoData, s.fullCfg.PCO)
+				// IPv4 PDN connection: IPv4 DNS and P-CSCF only; IPv6 addresses
+				// requested over S2b are for IPv6 PDN connections.
+				pcoCfg := s.fullCfg.PCO
+				pcoCfg.RequestDNSv6, pcoCfg.RequestPCSCFv6 = false, false
+				appendDNSFromPCO(cp, pcoData, pcoCfg)
+				appendPCSCFFromPCO(cp, pcoData, pcoCfg)
 			}
 		}
 	}
@@ -1168,6 +1190,10 @@ func buildESPSAResponse(container *message.IKEPayloadContainer, prop *childPropo
 // TSi is narrowed to paa/32 when available; otherwise 0.0.0.0/0.
 // TSr is always 0.0.0.0/0 (ePDG accepts all inbound).
 func buildTSResponse(container *message.IKEPayloadContainer, paa net.IP) {
+	if paa != nil && paa.To4() == nil && paa.To16() != nil {
+		buildTSResponse6(container, paa)
+		return
+	}
 	var tsStart, tsEnd []byte
 	if paa4 := paa.To4(); paa4 != nil {
 		tsStart = []byte(paa4)

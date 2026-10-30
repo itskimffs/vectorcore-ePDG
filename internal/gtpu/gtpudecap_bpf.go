@@ -22,6 +22,9 @@ type GtpuDecapTeidEntry struct {
 	_       structs.HostLayout
 	Paa     [4]uint8
 	PgwAddr [4]uint8
+	Paa6    [8]uint8
+	IsV6    uint8
+	Pad     [3]uint8
 }
 
 // LoadGtpuDecap returns the embedded CollectionSpec for GtpuDecap.

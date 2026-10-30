@@ -23,6 +23,11 @@ type GtpuEncapIpv4Key struct {
 	Addr [4]uint8
 }
 
+type GtpuEncapIpv6PrefixKey struct {
+	_      structs.HostLayout
+	Prefix [8]uint8
+}
+
 type GtpuEncapTftRuleEntry struct {
 	_            structs.HostLayout
 	UlTeid       uint32
@@ -103,6 +108,7 @@ type GtpuEncapProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type GtpuEncapMapSpecs struct {
 	TftRuleMap       *ebpf.MapSpec `ebpf:"tft_rule_map"`
+	Ue6SessionMap    *ebpf.MapSpec `ebpf:"ue6_session_map"`
 	UeSessionMap     *ebpf.MapSpec `ebpf:"ue_session_map"`
 	UlBearerCounters *ebpf.MapSpec `ebpf:"ul_bearer_counters"`
 	UlStats          *ebpf.MapSpec `ebpf:"ul_stats"`
@@ -135,6 +141,7 @@ func (o *GtpuEncapObjects) Close() error {
 // It can be passed to LoadGtpuEncapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type GtpuEncapMaps struct {
 	TftRuleMap       *ebpf.Map `ebpf:"tft_rule_map"`
+	Ue6SessionMap    *ebpf.Map `ebpf:"ue6_session_map"`
 	UeSessionMap     *ebpf.Map `ebpf:"ue_session_map"`
 	UlBearerCounters *ebpf.Map `ebpf:"ul_bearer_counters"`
 	UlStats          *ebpf.Map `ebpf:"ul_stats"`
@@ -143,6 +150,7 @@ type GtpuEncapMaps struct {
 func (m *GtpuEncapMaps) Close() error {
 	return _GtpuEncapClose(
 		m.TftRuleMap,
+		m.Ue6SessionMap,
 		m.UeSessionMap,
 		m.UlBearerCounters,
 		m.UlStats,

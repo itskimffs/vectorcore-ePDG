@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package s2b
 
 import (
@@ -57,6 +61,8 @@ const (
 	causeContextNotFound       uint8 = 64
 	ratTypeWLAN                uint8 = 3
 	pdnTypeIPv4                uint8 = 1
+	pdnTypeIPv6                uint8 = 2 // TS 29.274 §8.34
+	pdnTypeIPv4v6              uint8 = 3
 	ifaceS5S8SGWGTPU           uint8 = 4
 	ifaceS5S8PGWGTPU           uint8 = 5
 	ifaceS2BePDGGTPC           uint8 = 30
@@ -389,6 +395,22 @@ func paaIPv4RequestIE() ie {
 	return ie{Type: iePAA, Payload: []byte{pdnTypeIPv4, 0, 0, 0, 0}}
 }
 
+// paaIPv6RequestIE requests a dynamic IPv6 prefix (TS 29.274 §8.14: PDN type 2,
+// IPv6 prefix length, 16 octets IPv6 prefix and interface identifier, all zero).
+func paaIPv6RequestIE() ie {
+	payload := make([]byte, 18)
+	payload[0] = pdnTypeIPv6
+	return ie{Type: iePAA, Payload: payload}
+}
+
+// paaRequestIE returns the PAA request for the PDN type the UE asked for.
+func paaRequestIE(pdnType uint8) ie {
+	if pdnType == pdnTypeIPv6 {
+		return paaIPv6RequestIE()
+	}
+	return paaIPv4RequestIE()
+}
+
 func servingNetworkIE(mcc, mnc string) ie {
 	return ie{Type: ieServingNetwork, Payload: encodePLMN(mcc, mnc)}
 }
@@ -415,6 +437,21 @@ func parsePAA(ies []ie) net.IP {
 		return nil
 	}
 	return net.IPv4(paa.Payload[1], paa.Payload[2], paa.Payload[3], paa.Payload[4])
+}
+
+// parsePAAIPv6 returns the IPv6 address (prefix and interface identifier) and the
+// prefix length from a PAA of PDN type IPv6 or IPv4v6 (TS 29.274 §8.14).
+func parsePAAIPv6(ies []ie) (net.IP, uint8) {
+	paa, ok := findIE(ies, iePAA, 0)
+	if !ok || len(paa.Payload) < 18 {
+		return nil, 0
+	}
+	if t := paa.Payload[0] & 0x07; t != pdnTypeIPv6 && t != pdnTypeIPv4v6 {
+		return nil, 0
+	}
+	ip := make(net.IP, net.IPv6len)
+	copy(ip, paa.Payload[2:18])
+	return ip, paa.Payload[1]
 }
 
 func parseFTEID(e ie) (uint8, uint32, net.IP, bool) {

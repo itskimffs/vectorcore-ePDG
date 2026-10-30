@@ -1,4 +1,8 @@
-/* TC-BPF uplink GTP-U encapsulation.
+/* Modified by itskimffs (2026-10), see NOTICE: inner IPv6 (IPv6 PDN, keyed by the UE's /64 prefix).
+ * This file is part of vectorcore-ePDG, licensed under the Apache License,
+ * Version 2.0 (see LICENSE).
+ *
+ * TC-BPF uplink GTP-U encapsulation.
  *
  * Attaches to vc-xfrm0 ingress (post-XFRM/IPsec decrypt).
  *
@@ -22,6 +26,7 @@
 #include <bpf/bpf_endian.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/udp.h>
 #include <linux/in.h>
 #include <linux/pkt_cls.h>
@@ -77,6 +82,18 @@ struct {
     __type(value, struct ue_session_entry);
     __uint(max_entries, 4096);
 } ue_session_map SEC(".maps");
+
+/* IPv6 PDN: UE /64 prefix (first 8 octets of the inner source address). */
+struct ipv6_prefix_key {
+    __u8 prefix[8];
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key,   struct ipv6_prefix_key);
+    __type(value, struct ue_session_entry);
+    __uint(max_entries, 4096);
+} ue6_session_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -180,10 +197,108 @@ static __always_inline int tft_rule_matches(struct tft_rule_entry *rule, struct 
 /* Outer header size: IP(20) + UDP(8) + GTP-U(8) = 36 bytes. */
 #define OUTER_HDR_LEN 36
 
+static __always_inline void count_ul(__u32 teid, __u32 len)
+{
+    struct bearer_counters *bc = bpf_map_lookup_elem(&ul_bearer_counters, &teid);
+    if (!bc) {
+        struct bearer_counters zero = {};
+        bpf_map_update_elem(&ul_bearer_counters, &teid, &zero, BPF_NOEXIST);
+        bc = bpf_map_lookup_elem(&ul_bearer_counters, &teid);
+    }
+    if (bc) {
+        __sync_fetch_and_add(&bc->packets, 1);
+        __sync_fetch_and_add(&bc->bytes, len);
+    }
+}
+
+/* Inner IPv6 (IPv6 PDN): same outer IPv4/UDP/GTP-U headers as the IPv4 path.
+ * No TFT rules: uplink goes on the default bearer TEID.
+ *
+ * BPF_ADJ_ROOM_NET inserts the room after the 40-octet IPv6 header, so the
+ * IPv6 header is written again after the outer headers, as the IPv4 path does.
+ * BPF_F_ADJ_ROOM_ENCAP_L3_IPV4 makes the kernel set skb->protocol to IPv4
+ * (net/core/filter.c bpf_skb_net_grow), which bpf_redirect_neigh needs to use
+ * the IPv4 next hop (__bpf_redirect_neigh dispatches on skb->protocol). */
+static __always_inline int tc_gtpu_encap_v6(struct __sk_buff *skb)
+{
+    stat_inc(UL_STAT_SEEN);
+
+    struct ipv6hdr inner6 = {};
+    if (bpf_skb_load_bytes_relative(skb, 0, &inner6, sizeof(inner6), BPF_HDR_START_NET) < 0)
+        return TC_ACT_OK;
+    if (inner6.version != 6)
+        return TC_ACT_OK;
+
+    struct ipv6_prefix_key key = {};
+    __builtin_memcpy(key.prefix, &inner6.saddr, sizeof(key.prefix));
+    struct ue_session_entry *sess = bpf_map_lookup_elem(&ue6_session_map, &key);
+    if (!sess) {
+        stat_inc(UL_STAT_UE_MISS);
+        return TC_ACT_OK;
+    }
+
+    __u32 selected_teid = sess->ul_teid;
+    __u32 inner_len = sizeof(struct ipv6hdr) + bpf_ntohs(inner6.payload_len);
+    __u16 gtp_len  = (__u16)inner_len;
+    __u16 udp_len  = 8 + 8 + gtp_len;
+    __u16 ip_total = 20 + udp_len;
+
+    if (bpf_skb_adjust_room(skb, OUTER_HDR_LEN, BPF_ADJ_ROOM_NET,
+                            BPF_F_ADJ_ROOM_ENCAP_L3_IPV4 | BPF_F_ADJ_ROOM_ENCAP_L4_UDP) < 0) {
+        stat_inc(UL_STAT_ADJUST_FAIL);
+        return TC_ACT_OK;
+    }
+
+    struct iphdr outer_ip = {};
+    outer_ip.version  = 4;
+    outer_ip.ihl      = 5;
+    outer_ip.tot_len  = bpf_htons(ip_total);
+    outer_ip.frag_off = bpf_htons(IP_DF);
+    outer_ip.ttl      = 64;
+    outer_ip.protocol = IPPROTO_UDP;
+    __builtin_memcpy(&outer_ip.saddr, sess->local_ip, sizeof(outer_ip.saddr));
+    __builtin_memcpy(&outer_ip.daddr, sess->pgw_ip, sizeof(outer_ip.daddr));
+    outer_ip.check    = ip4_csum(&outer_ip);
+
+    struct udphdr udp = {};
+    udp.source = bpf_htons(GTP_UDP_PORT);
+    udp.dest   = bpf_htons(GTP_UDP_PORT);
+    udp.len    = bpf_htons(udp_len);
+
+    struct gtpuhdr gtp = {};
+    *((__u8 *)&gtp) = GTP_FLAGS;
+    gtp.message_type   = GTPU_G_PDU;
+    gtp.message_length = bpf_htons(gtp_len);
+    gtp.teid           = bpf_htonl(selected_teid);
+
+    if (bpf_skb_store_bytes(skb, NET_HDR_OFF, &outer_ip, sizeof(outer_ip), 0) < 0 ||
+        bpf_skb_store_bytes(skb, NET_HDR_OFF + 20, &udp, sizeof(udp), 0) < 0 ||
+        bpf_skb_store_bytes(skb, NET_HDR_OFF + 28, &gtp, sizeof(gtp), 0) < 0 ||
+        bpf_skb_store_bytes(skb, NET_HDR_OFF + OUTER_HDR_LEN, &inner6, sizeof(inner6), 0) < 0) {
+        stat_inc(UL_STAT_STORE_FAIL);
+        return TC_ACT_OK;
+    }
+
+    stat_inc(UL_STAT_ENCAP_OK);
+    count_ul(selected_teid, inner_len);
+
+    struct bpf_redir_neigh nh = {};
+    nh.nh_family = AF_INET;
+    __builtin_memcpy(&nh.ipv4_nh, sess->pgw_ip, sizeof(nh.ipv4_nh));
+
+    long rc = bpf_redirect_neigh(sess->s2b_ifindex, &nh, sizeof(nh), 0);
+    if (rc != TC_ACT_REDIRECT)
+        stat_inc(UL_STAT_REDIR_FAIL);
+    return (int)rc;
+}
+
 SEC("tc")
 int tc_gtpu_encap_func(struct __sk_buff *skb)
 {
-    /* Only handle IPv4. */
+    if (skb->protocol == bpf_htons(ETH_P_IPV6))
+        return tc_gtpu_encap_v6(skb);
+
+    /* Otherwise only handle IPv4. */
     if (skb->protocol != bpf_htons(ETH_P_IP)) {
         stat_inc(UL_STAT_NOT_IPV4);
         return TC_ACT_OK;

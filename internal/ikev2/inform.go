@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: DPD probe kept and retransmitted with the same Message ID until answered (RFC 7296 §2.1, §2.3, §2.4).
+// Modified by itskimffs (2026-10), see NOTICE: DPD probe kept and retransmitted with the same Message ID until answered (RFC 7296 §2.1, §2.3, §2.4); traffic selectors for IPv6 PAAs.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -282,7 +282,7 @@ func (s *Server) removeXFRMChildSA(sa *ikeSA) {
 		return
 	}
 
-	var remoteTS *net.IPNet
+	var paa net.IP
 	// Try to reconstruct the remote TS from the session PAA.
 	if s.sessions != nil && sa.sessionID != "" {
 		if sess := s.sessions.Get(sa.sessionID); sess != nil {
@@ -292,17 +292,10 @@ func (s *Server) removeXFRMChildSA(sa *ikeSA) {
 				paaStr = sess.S2B.PAA
 			}
 			sess.RUnlock()
-			if paa := net.ParseIP(paaStr); paa != nil {
-				if paa4 := paa.To4(); paa4 != nil {
-					remoteTS = &net.IPNet{IP: paa4, Mask: net.CIDRMask(32, 32)}
-				}
-			}
+			paa = net.ParseIP(paaStr)
 		}
 	}
-	if remoteTS == nil {
-		remoteTS = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-	}
-	_, localTS, _ := net.ParseCIDR("0.0.0.0/0")
+	localTS, remoteTS := paaTrafficSelectors(paa)
 
 	encrName, integName, integTrunc := childAlgNames(sa.espProp)
 	encrIn, integIn, encrOut, integOut := deriveChildSAKeys(sa.saKey, sa.nonceI, sa.nonceR,
@@ -439,7 +432,7 @@ func (s *Server) handleUpdateSA(conn *net.UDPConn, remote *net.UDPAddr, sa *ikeS
 // migrateMobikeXFRM replaces the XFRM CHILD SA outer endpoints.
 // Must be called with sa.mu held.
 func (s *Server) migrateMobikeXFRM(sa *ikeSA, newRemote *net.UDPAddr) error {
-	var remoteTS *net.IPNet
+	var paa net.IP
 	if s.sessions != nil && sa.sessionID != "" {
 		if sess := s.sessions.Get(sa.sessionID); sess != nil {
 			sess.RLock()
@@ -448,17 +441,10 @@ func (s *Server) migrateMobikeXFRM(sa *ikeSA, newRemote *net.UDPAddr) error {
 				paaStr = sess.S2B.PAA
 			}
 			sess.RUnlock()
-			if paa := net.ParseIP(paaStr); paa != nil {
-				if paa4 := paa.To4(); paa4 != nil {
-					remoteTS = &net.IPNet{IP: paa4, Mask: net.CIDRMask(32, 32)}
-				}
-			}
+			paa = net.ParseIP(paaStr)
 		}
 	}
-	if remoteTS == nil {
-		remoteTS = &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
-	}
-	_, localTS, _ := net.ParseCIDR("0.0.0.0/0")
+	localTS, remoteTS := paaTrafficSelectors(paa)
 
 	encrName, integName, integTrunc := childAlgNames(sa.espProp)
 	encrIn, integIn, encrOut, integOut := deriveChildSAKeys(sa.saKey, sa.nonceI, sa.nonceR,
