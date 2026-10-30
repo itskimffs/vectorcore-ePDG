@@ -1,5 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication state (eapOnly);
-// DPD retransmission state (RFC 7296 §2.1, §2.3).
+// DPD retransmission state (RFC 7296 §2.1, §2.3); cpWantsIP6 (TS 24.302 §7.4.1).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -91,6 +91,7 @@ type ikeSA struct {
 	peerESPSPI  uint32 // UE's inbound ESP SPI from SAi2
 	localESPSPI uint32 // ePDG's inbound ESP SPI for SAr2
 	cpWantsIP   bool   // UE requested INTERNAL_IP4_ADDRESS via CFG_REQUEST
+	cpWantsIP6  bool   // UE requested INTERNAL_IP6_ADDRESS via CFG_REQUEST
 	eapOnly     bool   // RFC 5998: UE sent N(EAP_ONLY_AUTHENTICATION) in round 1
 
 	// Pending CHILD SA during rekey window (RFC 7296 §2.8): populated after we send
