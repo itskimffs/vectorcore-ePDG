@@ -248,6 +248,17 @@ func (s *Server) handleAuthRound1(conn *net.UDPConn, remote *net.UDPAddr, sa *ik
 			}
 		}
 	}
+	if pl.cp != nil {
+		attrs := make([]string, 0, len(pl.cp.ConfigurationAttribute))
+		for _, attr := range pl.cp.ConfigurationAttribute {
+			attrs = append(attrs, fmt.Sprintf("%d/%d", attr.Type, len(attr.Value)))
+		}
+		s.log.Info("IKE_AUTH round1: UE configuration payload",
+			"imsi", imsi, "cfg_type", pl.cp.ConfigurationType, "attributes_type_len", attrs,
+			"wants_ip4", sa.cpWantsIP, "wants_ip6", sa.cpWantsIP6)
+	} else {
+		s.log.Info("IKE_AUTH round1: no configuration payload from UE", "imsi", imsi)
+	}
 	if sa.handoverIP != nil {
 		s.log.Info("IKE_AUTH round1: VoLTE→VoWiFi handover detected",
 			"imsi", imsi, "requested_paa", sa.handoverIP)
