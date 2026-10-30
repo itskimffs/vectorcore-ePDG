@@ -1,4 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
+// PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1);
 // the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
@@ -59,6 +60,10 @@ const (
 	// Detected and logged only, to inform whether implementing the full
 	// mechanism is worth the effort for this deployment's UE fleet.
 	notifyIKEv2MultipleBearerPDNConnectivity uint16 = 42011
+	// TS 24.302 §8.1.2.2: PDN_TYPE_IPv4_ONLY_ALLOWED. §7.4.1: when the UE requested
+	// both an IPv4 address and an IPv6 prefix but only an IPv4 address is assigned,
+	// the ePDG should add this Notify to the final IKE_AUTH response.
+	notifyPDNTypeIPv4OnlyAllowed uint16 = 41050
 	// RFC 5998 §5: EAP_ONLY_AUTHENTICATION notify, sent by the initiator in
 	// message 3 when it does not want public-key-based responder auth.
 	notifyEAPOnlyAuthentication uint16 = 16417
@@ -230,6 +235,9 @@ func (s *Server) handleAuthRound1(conn *net.UDPConn, remote *net.UDPAddr, sa *ik
 	// the UE is asking the PGW to preserve its existing PDN connection.
 	if pl.cp != nil && pl.cp.ConfigurationType == message.CFG_REQUEST {
 		for _, attr := range pl.cp.ConfigurationAttribute {
+			if attr.Type == message.INTERNAL_IP6_ADDRESS {
+				sa.cpWantsIP6 = true
+			}
 			if attr.Type == message.INTERNAL_IP4_ADDRESS {
 				sa.cpWantsIP = true
 				if len(attr.Value) == 4 {
@@ -239,6 +247,17 @@ func (s *Server) handleAuthRound1(conn *net.UDPConn, remote *net.UDPAddr, sa *ik
 				}
 			}
 		}
+	}
+	if pl.cp != nil {
+		attrs := make([]string, 0, len(pl.cp.ConfigurationAttribute))
+		for _, attr := range pl.cp.ConfigurationAttribute {
+			attrs = append(attrs, fmt.Sprintf("%d/%d", attr.Type, len(attr.Value)))
+		}
+		s.log.Info("IKE_AUTH round1: UE configuration payload",
+			"imsi", imsi, "cfg_type", pl.cp.ConfigurationType, "attributes_type_len", attrs,
+			"wants_ip4", sa.cpWantsIP, "wants_ip6", sa.cpWantsIP6)
+	} else {
+		s.log.Info("IKE_AUTH round1: no configuration payload from UE", "imsi", imsi)
 	}
 	if sa.handoverIP != nil {
 		s.log.Info("IKE_AUTH round1: VoLTE→VoWiFi handover detected",
@@ -703,6 +722,13 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 				appendPCSCFFromPCO(cp, pcoData, s.fullCfg.PCO)
 			}
 		}
+	}
+
+	// TS 24.302 §7.4.1: the UE requested both an IPv4 address and an IPv6 prefix,
+	// but only an IPv4 address is assigned (this ePDG requests PDN type IPv4 on S2b).
+	if sa.cpWantsIP && sa.cpWantsIP6 && paa != nil {
+		inner.BuildNotification(message.TypeNone, notifyPDNTypeIPv4OnlyAllowed, nil, nil)
+		s.log.Info("IKE_AUTH final: PDN_TYPE_IPv4_ONLY_ALLOWED", "imsi", sa.imsi, "apn", sa.apn)
 	}
 
 	// Echo MOBIKE_SUPPORTED if the UE negotiated it (RFC 4555 §2.1).

@@ -20,3 +20,6 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   before it is accepted; liveness (lastSeen) only counts authenticated messages
   (RFC 7296 2.1, 2.3, 2.4) (internal/ikev2/inform.go, internal/ikev2/sa.go,
   internal/ikev2/rekey.go, internal/ikev2/dpd_retransmit_test.go)
+- PDN_TYPE_IPv4_ONLY_ALLOWED Notify in the final IKE_AUTH response when the UE requested both an
+  IPv4 address and an IPv6 prefix and only IPv4 is assigned (TS 24.302 7.4.1)
+  (internal/ikev2/auth.go, internal/ikev2/sa.go)
