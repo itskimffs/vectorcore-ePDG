@@ -1,5 +1,6 @@
 // Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix),
 // TFT packet filter components per TS 24.008 Table 10.5.162 and uplink TFT rules for IPv6.
+// Prometheus metrics: default bearer QCI and traffic per APN, PDN type and QCI (metrics.go).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -92,6 +93,10 @@ type Manager struct {
 
 	bpf *BPFDataplane
 	tc  *TCDataplane
+
+	// trafficTotals holds cumulative per-bearer packet/byte counts summed by
+	// APN, PDN type and QCI (see metrics.go). Guarded by mu.
+	trafficTotals map[TrafficKey]*TrafficCounter
 }
 
 // errorIndicationLimiter is a fixed-window rate limiter bounding how many
@@ -226,6 +231,7 @@ func NewManager(cfg config.Config, log *slog.Logger) *Manager {
 		cfg:                 cfg,
 		log:                 log,
 		sessionsByID:        make(map[string]*Session),
+		trafficTotals:       make(map[TrafficKey]*TrafficCounter),
 		sessionsByPAA:       make(map[string]*Session),
 		bearersByLocalTEID:  make(map[uint32]*BearerRef),
 		bearersByRemoteTEID: make(map[uint32]*BearerRef),
@@ -379,6 +385,7 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		RemoteTXTEID: s2bCtx.PGWUserTEID,
 		PGWGTPUIP:    pgw,
 		LocalGTPUIP:  local,
+		QoS:          BearerQoS{QCI: s2bCtx.QCI},
 		State:        BearerActive,
 	}
 	ds := &Session{
@@ -516,6 +523,7 @@ func (m *Manager) RemoveSession(ctx context.Context, sess *session.Session) erro
 	ds := m.sessionsByID[sess.ID]
 	if ds != nil {
 		for ebi, b := range ds.Bearers {
+			m.accountFinalLocked(ds, b)
 			delete(m.bearersByLocalTEID, b.LocalRXTEID)
 			delete(m.bearersByRemoteTEID, b.RemoteTXTEID)
 			if m.bpf != nil {
@@ -600,6 +608,7 @@ func (m *Manager) RemoveBearer(_ context.Context, sessionID string, ebi uint8) e
 	if b == nil {
 		return nil
 	}
+	m.accountFinalLocked(ds, b)
 	delete(m.bearersByLocalTEID, b.LocalRXTEID)
 	delete(m.bearersByRemoteTEID, b.RemoteTXTEID)
 	if m.bpf != nil {
@@ -864,6 +873,7 @@ func (m *Manager) syncBearerCounters(dl, ul bearerCounterReader) {
 			if !ok {
 				continue
 			}
+			m.accountLocked(ds, b, DirectionDownlink, packets, bytes)
 			if packets > b.Counters.DownlinkPackets {
 				b.Counters.LastDownlinkPacket = now
 			}
@@ -885,6 +895,7 @@ func (m *Manager) syncBearerCounters(dl, ul bearerCounterReader) {
 			if !ok {
 				continue
 			}
+			m.accountLocked(ds, b, DirectionUplink, packets, bytes)
 			if packets > b.Counters.UplinkPackets {
 				b.Counters.LastUplinkPacket = now
 			}
@@ -1267,6 +1278,10 @@ func (m *Manager) UpdateBearer(_ context.Context, sessionID string, ebi, qci uin
 		return fmt.Errorf("bearer %d not found in session %q", ebi, sessionID)
 	}
 	if qci != 0 {
+		if qci != b.QoS.QCI {
+			// Traffic so far belongs to the old QCI in the metrics.
+			m.accountFinalLocked(ds, b)
+		}
 		b.QoS.QCI = qci
 	}
 	if len(tftRaw) > 0 {

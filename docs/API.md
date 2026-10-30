@@ -21,6 +21,7 @@ api:
 | `enabled` | `false` | Start the admin API listener |
 | `listen_address` | `0.0.0.0` | Bind address |
 | `listen_port` | `8080` | Bind port |
+| `metrics_imsi_label` | `false` | Add an `imsi` label to `epdg_pdn_sessions` and `epdg_bearers` on `GET /metrics` |
 
 The API is plain HTTP, not HTTPS, and has **no authentication** — it is a
 read-only observer, but anyone who can reach `listen_address:listen_port`
@@ -377,6 +378,44 @@ Direction (`_in` vs `_out`) is tracked internally by SPI, not by the
 kernel's `XFRMA_SA_DIR` attribute — that kernel attribute's wire format
 isn't consistent across kernel builds and was found to break SA
 installation entirely on some 6.x kernels (see `internal/xfrm/xfrm.go`).
+
+### GET /metrics
+
+Prometheus text format (0.0.4), served on the same listener at `/metrics`
+(not under `/api/v1`).
+
+```bash
+curl -s http://localhost:8080/metrics
+```
+
+```
+epdg_build_info{version="0.5.0d"} 1
+epdg_ike_sas 2
+epdg_child_sas 2
+epdg_pdn_sessions{apn="ims",pdn_type="ipv6"} 1
+epdg_bearers{apn="ims",pdn_type="ipv6",qci="1",type="dedicated"} 1
+epdg_bearers{apn="ims",pdn_type="ipv6",qci="5",type="default"} 1
+epdg_bearer_packets_total{apn="ims",pdn_type="ipv6",qci="1",direction="uplink"} 241
+epdg_bearer_bytes_total{apn="ims",pdn_type="ipv6",qci="1",direction="uplink"} 30848
+```
+
+| Metric | Type | Labels |
+|---|---|---|
+| `epdg_build_info` | gauge | `version` |
+| `epdg_ike_sas`, `epdg_child_sas` | gauge | – |
+| `epdg_pdn_sessions` | gauge | `apn`, `pdn_type` (`ipv4`/`ipv6`), `imsi` if `metrics_imsi_label` |
+| `epdg_bearers` | gauge | `apn`, `pdn_type`, `qci`, `type` (`default`/`dedicated`), `imsi` if `metrics_imsi_label` |
+| `epdg_bearer_packets_total`, `epdg_bearer_bytes_total` | counter | `apn`, `pdn_type`, `qci`, `direction` (`uplink`/`downlink`) |
+
+- `pdn_type` follows the PAA: IPv4 or IPv6 PDN connection.
+- The default bearer's QCI is the Bearer Level QoS in the Create Session
+  Response, or the requested QCI when the PGW leaves it out (it includes it
+  only when it differs, TS 29.274 Table 7.2.2-2). Dedicated bearers use the
+  QCI from Create/Update Bearer Request.
+- The traffic counters are the inner packets/bytes of the per-bearer BPF
+  counters, polled every 60 s and read once more when a bearer is removed or
+  its QCI changes, so they only grow. A scrape shows traffic up to the last
+  poll.
 
 ## Architecture notes
 
