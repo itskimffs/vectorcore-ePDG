@@ -15,3 +15,8 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
 - NAT-T: NAT detection in IKE_SA_INIT hashes SPIr = 0 as the initiator does (RFC 7296 2.23), and
   the SA follows the UE's IKE_AUTH port for UDP encapsulation (internal/ikev2/init.go,
   internal/ikev2/auth.go)
+- DPD: the outstanding probe is kept until the UE answers that Message ID and retransmitted
+  bitwise identical, a UE request no longer cancels it, and the UE's response is authenticated
+  before it is accepted; liveness (lastSeen) only counts authenticated messages
+  (RFC 7296 2.1, 2.3, 2.4) (internal/ikev2/inform.go, internal/ikev2/sa.go,
+  internal/ikev2/rekey.go, internal/ikev2/dpd_retransmit_test.go)

@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: DPD probe kept and retransmitted with the same Message ID until answered (RFC 7296 §2.1, §2.3, §2.4).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // INFORMATIONAL exchange handler (RFC 7296 §1.4, §2.24, §3.11).
@@ -39,14 +43,22 @@ func (s *Server) handleInformational(conn *net.UDPConn, remote *net.UDPAddr, pkt
 		return
 	}
 
-	// Handle UE's response to our DPD probe (no decrypt needed — it's empty).
+	// Handle UE's response to our DPD probe. It is only accepted after the
+	// integrity check (RFC 7296 §2.4: liveness needs a cryptographically
+	// protected message), and only for the Message ID of the outstanding probe.
 	if isUEResponse {
 		sa.mu.Lock()
 		if !sa.dpdSentAt.IsZero() && hdr.MessageID == sa.dpdMsgID {
-			sa.lastSeen = time.Now()
-			sa.dpdSentAt = time.Time{}
-			sa.dpdMsgID = 0
-			s.log.Debug("INFORMATIONAL: DPD response received", "imsi", sa.imsi, "msg_id", hdr.MessageID)
+			if _, _, err := decryptSK(sa.saKey, pkt); err != nil {
+				s.log.Warn("INFORMATIONAL: DPD response failed integrity check", "imsi", sa.imsi, "msg_id", hdr.MessageID, "err", err)
+			} else {
+				sa.lastSeen = time.Now()
+				sa.ourMsgID = sa.dpdMsgID + 1
+				sa.dpdSentAt = time.Time{}
+				sa.dpdLastTx = time.Time{}
+				sa.dpdPkt = nil
+				s.log.Debug("INFORMATIONAL: DPD response received", "imsi", sa.imsi, "msg_id", hdr.MessageID)
+			}
 		}
 		sa.mu.Unlock()
 		return
@@ -61,18 +73,17 @@ func (s *Server) handleInformational(conn *net.UDPConn, remote *net.UDPAddr, pkt
 	}
 
 	natt := sa.natT
-	sa.lastSeen = time.Now()
-	// Clear any pending DPD probe — the UE is clearly alive.
-	if !sa.dpdSentAt.IsZero() {
-		sa.dpdSentAt = time.Time{}
-		sa.dpdMsgID = 0
-	}
 
 	innerType, plain, err := decryptSK(sa.saKey, pkt)
 	if err != nil {
 		s.log.Warn("INFORMATIONAL: decrypt failed", "err", err, "remote", remote)
 		return
 	}
+	// A protected request proves the UE is alive (RFC 7296 §2.4), but it does not
+	// answer our own outstanding probe: that one stays pending and is retransmitted
+	// with the same Message ID (§2.1, §2.3), otherwise the UE drops every later
+	// probe as outside its window.
+	sa.lastSeen = time.Now()
 
 	// Parse inner payloads looking for DELETE and MOBIKE notifies.
 	var deleteIKE bool
@@ -546,13 +557,21 @@ func (s *Server) reaperLoop() {
 					s.sendDPDProbe(sa)
 				}
 			} else {
-				// Probe is outstanding — check if it has timed out.
-				if time.Since(sa.dpdSentAt) > timeout {
+				// Probe is outstanding. The UE is dead only when the probe has gone
+				// unanswered for the timeout and nothing protected has been received
+				// from it since (RFC 7296 §2.4).
+				lastAlive := sa.dpdSentAt
+				if sa.lastSeen.After(lastAlive) {
+					lastAlive = sa.lastSeen
+				}
+				if time.Since(lastAlive) > timeout {
 					s.log.Info("DPD timeout: tearing down IKE SA",
-						"imsi", sa.imsi, "spi_i", spiI,
+						"imsi", sa.imsi, "spi_i", spiI, "msg_id", sa.dpdMsgID,
 						"probe_sent_ago", time.Since(sa.dpdSentAt).Round(time.Second))
 					sa.state = ikeStateDeleting
 					s.fullTeardown(sa, "dpd_timeout")
+				} else if time.Since(sa.dpdLastTx) >= tick {
+					s.retransmitDPDProbe(sa)
 				}
 			}
 			sa.mu.Unlock()
@@ -619,45 +638,77 @@ func (s *Server) halfOpenReaperLoop() {
 }
 
 // sendDPDProbe sends an empty INFORMATIONAL request to the UE as a liveness probe.
+// The Message ID is ourMsgID; it is only advanced when the UE answers it.
 // Must be called with sa.mu held. sa.state must be ikeStateEstablished.
 func (s *Server) sendDPDProbe(sa *ikeSA) {
 	msgID := sa.ourMsgID
-	sa.ourMsgID++
 
-	conn := s.conn500
-	if sa.natT {
-		conn = s.conn4500
-	}
+	conn := s.dpdConn(sa)
 	if conn == nil {
 		return
 	}
 
-	if err := s.sendEncryptedRequest(conn, sa.remoteAddr, sa, message.INFORMATIONAL, msgID, 0, nil, sa.natT); err != nil {
+	out, err := s.encryptRequest(sa, message.INFORMATIONAL, msgID, 0, nil)
+	if err != nil {
 		s.log.Warn("DPD probe send failed", "imsi", sa.imsi, "err", err)
 		return
 	}
+	s.send(conn, sa.remoteAddr, out, sa.natT)
 
+	now := time.Now()
 	sa.dpdMsgID = msgID
-	sa.dpdSentAt = time.Now()
+	sa.dpdSentAt = now
+	sa.dpdLastTx = now
+	sa.dpdPkt = out
 	s.log.Debug("DPD probe sent", "imsi", sa.imsi, "msg_id", msgID)
+}
+
+// retransmitDPDProbe resends the outstanding probe bitwise identical, with the same
+// Message ID (RFC 7296 §2.1). Must be called with sa.mu held.
+func (s *Server) retransmitDPDProbe(sa *ikeSA) {
+	conn := s.dpdConn(sa)
+	if conn == nil || sa.dpdPkt == nil {
+		return
+	}
+
+	s.send(conn, sa.remoteAddr, sa.dpdPkt, sa.natT)
+	sa.dpdLastTx = time.Now()
+	s.log.Debug("DPD probe retransmitted", "imsi", sa.imsi, "msg_id", sa.dpdMsgID,
+		"probe_sent_ago", time.Since(sa.dpdSentAt).Round(time.Second))
+}
+
+func (s *Server) dpdConn(sa *ikeSA) *net.UDPConn {
+	if sa.natT {
+		return s.conn4500
+	}
+	return s.conn500
 }
 
 // sendEncryptedRequest encrypts and sends an IKE request message initiated by the ePDG
 // (as IKE responder). Differs from sendEncryptedRaw in that the IKE header flags are
 // 0x00 — no Initiator bit (ePDG is IKE responder), no Response bit (this is a request).
 func (s *Server) sendEncryptedRequest(conn *net.UDPConn, remote *net.UDPAddr, sa *ikeSA, exchType uint8, msgID uint32, innerNextPayload uint8, plain []byte, natt bool) error {
+	out, err := s.encryptRequest(sa, exchType, msgID, innerNextPayload, plain)
+	if err != nil {
+		return err
+	}
+
+	s.send(conn, remote, out, natt)
+	return nil
+}
+
+// encryptRequest builds an encrypted IKE request initiated by the ePDG, without sending it.
+func (s *Server) encryptRequest(sa *ikeSA, exchType uint8, msgID uint32, innerNextPayload uint8, plain []byte) ([]byte, error) {
 	totalLen, err := encryptedSKMessageLen(sa.saKey, len(plain))
 	if err != nil {
-		return fmt.Errorf("compute message length: %w", err)
+		return nil, fmt.Errorf("compute message length: %w", err)
 	}
 
 	hdrBytes := buildIKERequestHeaderBytes(sa.spiI, sa.spiR, exchType, msgID, totalLen)
 
 	out, err := encryptSK(sa.saKey, innerNextPayload, plain, hdrBytes)
 	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
+		return nil, fmt.Errorf("encrypt: %w", err)
 	}
-
-	s.send(conn, remote, out, natt)
-	return nil
+	return out, nil
 }

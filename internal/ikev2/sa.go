@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication state (eapOnly).
+// Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication state (eapOnly);
+// DPD retransmission state (RFC 7296 §2.1, §2.3).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -56,9 +57,14 @@ type ikeSA struct {
 	lastSeen  time.Time
 
 	// DPD (Dead Peer Detection) state for ePDG-initiated probes.
-	ourMsgID  uint32    // counter for INFORMATIONAL requests we send (under mu)
-	dpdMsgID  uint32    // message ID of the outstanding probe (0 = none pending)
-	dpdSentAt time.Time // when the probe was sent (zero = no probe pending)
+	// RFC 7296 §2.1/§2.3: the outstanding probe is kept until the UE answers that
+	// Message ID and is retransmitted bitwise identical; ourMsgID only moves on to
+	// the next request after the response.
+	ourMsgID  uint32    // Message ID of the next request we send (under mu)
+	dpdMsgID  uint32    // Message ID of the outstanding probe
+	dpdSentAt time.Time // when the probe was first sent (zero = no probe pending)
+	dpdLastTx time.Time // last (re)transmission of the probe
+	dpdPkt    []byte    // the encrypted probe, retransmitted as is
 
 	// IKE_AUTH EAP-AKA round state (under mu).
 	eapRound            int    // 0 = first IKE_AUTH not yet seen
