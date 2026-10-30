@@ -31,3 +31,9 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   internal/ikev2/paa6.go, internal/s2b/codec.go, internal/s2b/client.go, internal/xfrm/xfrm.go,
   internal/gtpu/dataplane.go, internal/gtpu/bpf_loader.go, internal/gtpu/tc_loader.go,
   internal/gtpu/bpf/xdp_gtpu_decap.c, internal/gtpu/bpf/tc_gtpu_encap.c and tests)
+- Uplink TFT for IPv6 PDN connections and TFT packet filter component types per TS 24.008
+  Table 10.5.162: IPv4 local address is 0x11 (was 0x18), IPv6 remote address (0x20), IPv6 remote
+  address/prefix length (0x21) and IPv6 local address/prefix length (0x23); the TC program selects
+  the dedicated bearer for inner IPv6 with rules keyed by the UE's /64 prefix
+  (internal/gtpu/dataplane.go, internal/gtpu/tc_loader.go, internal/gtpu/bpf/tc_gtpu_encap.c,
+  internal/gtpu/tft_test.go, internal/gtpu/ipv6_tft_test.go)
