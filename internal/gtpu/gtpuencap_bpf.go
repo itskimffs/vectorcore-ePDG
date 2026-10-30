@@ -28,6 +28,27 @@ type GtpuEncapIpv6PrefixKey struct {
 	Prefix [8]uint8
 }
 
+type GtpuEncapTft6RuleEntry struct {
+	_            structs.HostLayout
+	UlTeid       uint32
+	Precedence   uint8
+	Flags        uint8
+	Protocol     uint8
+	Pad          uint8
+	RemoteIp     [16]uint8
+	RemoteMask   [16]uint8
+	LocalPortLo  uint16
+	LocalPortHi  uint16
+	RemotePortLo uint16
+	RemotePortHi uint16
+}
+
+type GtpuEncapTft6RuleKey struct {
+	_      structs.HostLayout
+	Prefix [8]uint8
+	Index  uint32
+}
+
 type GtpuEncapTftRuleEntry struct {
 	_            structs.HostLayout
 	UlTeid       uint32
@@ -107,6 +128,7 @@ type GtpuEncapProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type GtpuEncapMapSpecs struct {
+	Tft6RuleMap      *ebpf.MapSpec `ebpf:"tft6_rule_map"`
 	TftRuleMap       *ebpf.MapSpec `ebpf:"tft_rule_map"`
 	Ue6SessionMap    *ebpf.MapSpec `ebpf:"ue6_session_map"`
 	UeSessionMap     *ebpf.MapSpec `ebpf:"ue_session_map"`
@@ -140,6 +162,7 @@ func (o *GtpuEncapObjects) Close() error {
 //
 // It can be passed to LoadGtpuEncapObjects or ebpf.CollectionSpec.LoadAndAssign.
 type GtpuEncapMaps struct {
+	Tft6RuleMap      *ebpf.Map `ebpf:"tft6_rule_map"`
 	TftRuleMap       *ebpf.Map `ebpf:"tft_rule_map"`
 	Ue6SessionMap    *ebpf.Map `ebpf:"ue6_session_map"`
 	UeSessionMap     *ebpf.Map `ebpf:"ue_session_map"`
@@ -149,6 +172,7 @@ type GtpuEncapMaps struct {
 
 func (m *GtpuEncapMaps) Close() error {
 	return _GtpuEncapClose(
+		m.Tft6RuleMap,
 		m.TftRuleMap,
 		m.Ue6SessionMap,
 		m.UeSessionMap,

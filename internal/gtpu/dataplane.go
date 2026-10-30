@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix),
+// TFT packet filter components per TS 24.008 Table 10.5.162 and uplink TFT rules for IPv6.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -157,6 +158,10 @@ type PacketFilter struct {
 	RemoteIPv4Mask net.IPMask
 	LocalIPv4      net.IP
 	LocalIPv4Mask  net.IPMask
+	RemoteIPv6     net.IP
+	RemoteIPv6Mask net.IPMask
+	LocalIPv6      net.IP
+	LocalIPv6Mask  net.IPMask
 	Protocol       uint8
 	HasProtocol    bool
 	LocalPortLo    uint16
@@ -1092,13 +1097,40 @@ func parsePacketFilterContents(pf *PacketFilter, data []byte) error {
 			pf.RemoteIPv4 = net.IPv4(data[i], data[i+1], data[i+2], data[i+3]).To4()
 			pf.RemoteIPv4Mask = net.IPMask{data[i+4], data[i+5], data[i+6], data[i+7]}
 			i += 8
-		case 0x18: // IPv4 local address
+		case 0x11: // IPv4 local address (TS 24.008 Table 10.5.162: 00010001)
 			if i+8 > len(data) {
 				return fmt.Errorf("IPv4 local address truncated")
 			}
 			pf.LocalIPv4 = net.IPv4(data[i], data[i+1], data[i+2], data[i+3]).To4()
 			pf.LocalIPv4Mask = net.IPMask{data[i+4], data[i+5], data[i+6], data[i+7]}
 			i += 8
+		case 0x20: // IPv6 remote address (16 bytes address + 16 bytes mask)
+			if i+32 > len(data) {
+				return fmt.Errorf("IPv6 remote address truncated")
+			}
+			pf.RemoteIPv6 = append(net.IP(nil), data[i:i+16]...)
+			pf.RemoteIPv6Mask = append(net.IPMask(nil), data[i+16:i+32]...)
+			i += 32
+		case 0x21: // IPv6 remote address/prefix length (16 bytes address + 1 byte prefix length)
+			if i+17 > len(data) {
+				return fmt.Errorf("IPv6 remote address/prefix length truncated")
+			}
+			if data[i+16] > 128 {
+				return fmt.Errorf("IPv6 remote prefix length %d > 128", data[i+16])
+			}
+			pf.RemoteIPv6 = append(net.IP(nil), data[i:i+16]...)
+			pf.RemoteIPv6Mask = net.CIDRMask(int(data[i+16]), 128)
+			i += 17
+		case 0x23: // IPv6 local address/prefix length (16 bytes address + 1 byte prefix length)
+			if i+17 > len(data) {
+				return fmt.Errorf("IPv6 local address/prefix length truncated")
+			}
+			if data[i+16] > 128 {
+				return fmt.Errorf("IPv6 local prefix length %d > 128", data[i+16])
+			}
+			pf.LocalIPv6 = append(net.IP(nil), data[i:i+16]...)
+			pf.LocalIPv6Mask = net.CIDRMask(int(data[i+16]), 128)
+			i += 17
 		case 0x30: // Protocol identifier
 			if i >= len(data) {
 				return fmt.Errorf("protocol identifier truncated")
@@ -1155,15 +1187,6 @@ func (m *Manager) syncTCBPFTFTRulesLocked(ds *Session) error {
 	if m.tc == nil || ds == nil {
 		return nil
 	}
-	if ds.PAA.To4() == nil {
-		// IPv6 PDN connection: no uplink TFT rules in TC-BPF yet, uplink uses
-		// the default bearer.
-		if len(buildTCBPFTFTRules(ds)) > 0 {
-			m.log.Warn("TC-BPF TFT rules not supported for IPv6 PDN, uplink on default bearer",
-				"session_id", ds.ID, "paa", ds.PAA.String())
-		}
-		return nil
-	}
 	rules := buildTCBPFTFTRules(ds)
 	if len(rules) > maxTCBPFTFTRules {
 		m.log.Warn("TC-BPF TFT rules truncated", "session_id", ds.ID, "paa", ds.PAA.String(), "rules", len(rules), "max", maxTCBPFTFTRules)
@@ -1198,10 +1221,24 @@ func buildTCBPFTFTRules(ds *Session) []TCBPFTFTRule {
 				RemotePortLo: f.RemotePortLo,
 				RemotePortHi: f.RemotePortHi,
 			}
-			if ip4 := f.RemoteIPv4.To4(); ip4 != nil && len(f.RemoteIPv4Mask) == net.IPv4len {
-				rule.Flags |= tcTFTFlagRemoteIP
-				copy(rule.RemoteIP[:], ip4)
-				copy(rule.RemoteMask[:], f.RemoteIPv4Mask)
+			if ds.PAA.To4() != nil {
+				if f.RemoteIPv6 != nil {
+					continue // IPv6 filter on an IPv4 PDN connection never matches
+				}
+				if ip4 := f.RemoteIPv4.To4(); ip4 != nil && len(f.RemoteIPv4Mask) == net.IPv4len {
+					rule.Flags |= tcTFTFlagRemoteIP
+					copy(rule.RemoteIP[:], ip4)
+					copy(rule.RemoteMask[:], f.RemoteIPv4Mask)
+				}
+			} else {
+				if f.RemoteIPv4 != nil {
+					continue // IPv4 filter on an IPv6 PDN connection never matches
+				}
+				if len(f.RemoteIPv6) == net.IPv6len && len(f.RemoteIPv6Mask) == net.IPv6len {
+					rule.Flags |= tcTFTFlagRemoteIP
+					copy(rule.RemoteIP6[:], f.RemoteIPv6)
+					copy(rule.RemoteMask6[:], f.RemoteIPv6Mask)
+				}
 			}
 			if f.HasProtocol {
 				rule.Flags |= tcTFTFlagProtocol

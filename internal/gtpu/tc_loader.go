@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix),
+// uplink TFT rules for IPv6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -33,6 +34,8 @@ type TCBPFTFTRule struct {
 	Protocol     uint8
 	RemoteIP     [4]uint8
 	RemoteMask   [4]uint8
+	RemoteIP6    [16]uint8 // IPv6 PDN connection: remote address/mask
+	RemoteMask6  [16]uint8
 	LocalPortLo  uint16
 	LocalPortHi  uint16
 	RemotePortLo uint16
@@ -65,6 +68,9 @@ func newTCDataplane(ifName string, ifID uint32, maxEntries int) (*TCDataplane, e
 			m.MaxEntries = uint32(maxEntries)
 		}
 		if m, ok := spec.Maps["tft_rule_map"]; ok {
+			m.MaxEntries = uint32(maxEntries)
+		}
+		if m, ok := spec.Maps["tft6_rule_map"]; ok {
 			m.MaxEntries = uint32(maxEntries)
 		}
 		if m, ok := spec.Maps["ul_bearer_counters"]; ok {
@@ -144,8 +150,8 @@ func (d *TCDataplane) AddUESession(paa net.IP, ulTEID uint32, pgwIP, localIP net
 }
 
 // addUESession6 inserts a UE session for an IPv6 PDN connection into
-// ue6_session_map, keyed by the UE's /64 prefix. IPv6 sessions have no TFT
-// rules: uplink goes on the default bearer.
+// ue6_session_map, keyed by the UE's /64 prefix. Uplink TFT rules are set
+// with SetTFTRules (tft6_rule_map).
 func (d *TCDataplane) addUESession6(paa6 net.IP, ulTEID uint32, pgwIP, localIP net.IP, s2bIfindex int) error {
 	pgw4 := pgwIP.To4()
 	loc4 := localIP.To4()
@@ -167,12 +173,15 @@ func (d *TCDataplane) addUESession6(paa6 net.IP, ulTEID uint32, pgwIP, localIP n
 }
 
 func (d *TCDataplane) SetTFTRules(paa net.IP, rules []TCBPFTFTRule) error {
-	paa4 := paa.To4()
-	if paa4 == nil {
-		return fmt.Errorf("tc: SetTFTRules: PAA must be IPv4")
-	}
 	if len(rules) > maxTCBPFTFTRules {
 		return fmt.Errorf("tc: SetTFTRules: %d rules exceeds max %d", len(rules), maxTCBPFTFTRules)
+	}
+	if paa.To4() == nil && paa.To16() != nil {
+		return d.setTFTRules6(paa.To16(), rules)
+	}
+	paa4 := paa.To4()
+	if paa4 == nil {
+		return fmt.Errorf("tc: SetTFTRules: invalid PAA %v", paa)
 	}
 
 	var sessionKey GtpuEncapIpv4Key
@@ -218,12 +227,71 @@ func (d *TCDataplane) SetTFTRules(paa net.IP, rules []TCBPFTFTRule) error {
 	return nil
 }
 
+// setTFTRules6 replaces the uplink TFT rules of an IPv6 PDN connection
+// (tft6_rule_map, keyed by the UE's /64 prefix). rule_count in
+// ue6_session_map is cleared first and set last, so the program never reads a
+// partially written rule set.
+func (d *TCDataplane) setTFTRules6(paa6 net.IP, rules []TCBPFTFTRule) error {
+	var sessionKey GtpuEncapIpv6PrefixKey
+	copy(sessionKey.Prefix[:], paa6[:8])
+	var entry GtpuEncapUeSessionEntry
+	if err := d.objs.Ue6SessionMap.Lookup(sessionKey, &entry); err != nil {
+		return fmt.Errorf("tc: ue6_session_map lookup PAA %s: %w", paa6, err)
+	}
+	entry.RuleCount = 0
+	if err := d.objs.Ue6SessionMap.Put(sessionKey, entry); err != nil {
+		return fmt.Errorf("tc: ue6_session_map clear rule_count PAA %s: %w", paa6, err)
+	}
+	if err := d.clearTFTRules6(paa6); err != nil {
+		return err
+	}
+	for i, rule := range rules {
+		key := GtpuEncapTft6RuleKey{Index: uint32(i)}
+		copy(key.Prefix[:], paa6[:8])
+		value := GtpuEncapTft6RuleEntry{
+			UlTeid:       rule.TEID,
+			Precedence:   rule.Precedence,
+			Flags:        rule.Flags,
+			Protocol:     rule.Protocol,
+			RemoteIp:     rule.RemoteIP6,
+			RemoteMask:   rule.RemoteMask6,
+			LocalPortLo:  rule.LocalPortLo,
+			LocalPortHi:  rule.LocalPortHi,
+			RemotePortLo: rule.RemotePortLo,
+			RemotePortHi: rule.RemotePortHi,
+		}
+		if err := d.objs.Tft6RuleMap.Put(key, value); err != nil {
+			return fmt.Errorf("tc: tft6_rule_map put PAA %s index %d: %w", paa6, i, err)
+		}
+	}
+	entry.RuleCount = uint32(len(rules))
+	if err := d.objs.Ue6SessionMap.Put(sessionKey, entry); err != nil {
+		return fmt.Errorf("tc: ue6_session_map rule_count update PAA %s: %w", paa6, err)
+	}
+	return nil
+}
+
 func (d *TCDataplane) ClearTFTRules(paa net.IP) error {
+	if paa != nil && paa.To4() == nil && paa.To16() != nil {
+		return d.clearTFTRules6(paa.To16())
+	}
 	paa4 := paa.To4()
 	if paa4 == nil {
 		return nil
 	}
 	return d.clearTFTRules(paa4)
+}
+
+func (d *TCDataplane) clearTFTRules6(paa6 net.IP) error {
+	for i := uint32(0); i < maxTCBPFTFTRules; i++ {
+		key := GtpuEncapTft6RuleKey{Index: i}
+		copy(key.Prefix[:], paa6[:8])
+		err := d.objs.Tft6RuleMap.Delete(key)
+		if err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("tc: tft6_rule_map delete PAA %s index %d: %w", paa6, i, err)
+		}
+	}
+	return nil
 }
 
 func (d *TCDataplane) clearTFTRules(paa4 net.IP) error {
@@ -262,6 +330,9 @@ func (d *TCDataplane) RemoveBearerCounter(teid uint32) error {
 // RemoveUESession deletes the UE session entry for paa. Returns nil if absent.
 func (d *TCDataplane) RemoveUESession(paa net.IP) error {
 	if paa != nil && paa.To4() == nil && paa.To16() != nil {
+		if err := d.clearTFTRules6(paa.To16()); err != nil {
+			return err
+		}
 		var key GtpuEncapIpv6PrefixKey
 		copy(key.Prefix[:], paa.To16()[:8])
 		err := d.objs.Ue6SessionMap.Delete(key)

@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: IPv4 local address component type 0x11.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package gtpu
 
 import (
@@ -45,7 +49,7 @@ func compIPv4Remote(ip net.IP, mask net.IPMask) []byte {
 }
 
 func compIPv4Local(ip net.IP, mask net.IPMask) []byte {
-	c := []byte{0x18}
+	c := []byte{0x11}
 	c = append(c, ip.To4()...)
 	return append(c, []byte(mask)...)
 }

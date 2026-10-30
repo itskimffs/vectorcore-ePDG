@@ -1,4 +1,5 @@
-/* Modified by itskimffs (2026-10), see NOTICE: inner IPv6 (IPv6 PDN, keyed by the UE's /64 prefix).
+/* Modified by itskimffs (2026-10), see NOTICE: inner IPv6 (IPv6 PDN, keyed by the UE's /64 prefix),
+ * uplink TFT rules for IPv6 PDN connections.
  * This file is part of vectorcore-ePDG, licensed under the Apache License,
  * Version 2.0 (see LICENSE).
  *
@@ -102,6 +103,35 @@ struct {
     __uint(max_entries, 4096);
 } tft_rule_map SEC(".maps");
 
+/* IPv6 PDN: uplink TFT rules keyed by the UE's /64 prefix and rule index.
+ * remote_ip/remote_mask are the packet filter's IPv6 remote address
+ * (the inner destination address on uplink). */
+struct tft6_rule_key {
+    __u8 prefix[8];
+    __u32 index;
+};
+
+struct tft6_rule_entry {
+    __u32 ul_teid;       /* selected dedicated bearer TEID, host byte order */
+    __u8 precedence;
+    __u8 flags;
+    __u8 protocol;
+    __u8 _pad;
+    __u8 remote_ip[16];
+    __u8 remote_mask[16];
+    __u16 local_port_lo;
+    __u16 local_port_hi;
+    __u16 remote_port_lo;
+    __u16 remote_port_hi;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key,   struct tft6_rule_key);
+    __type(value, struct tft6_rule_entry);
+    __uint(max_entries, 4096);
+} tft6_rule_map SEC(".maps");
+
 /* ul_bearer_counters: TEID (host byte order) → packet/byte counters for
  * traffic encapsulated onto that bearer. Entries are created lazily on
  * first packet (see tc_gtpu_encap_func) and deleted from Go when the
@@ -192,6 +222,41 @@ static __always_inline int tft_rule_matches(struct tft_rule_entry *rule, struct 
     return 1;
 }
 
+static __always_inline int ipv6_mask_match(const __u8 pkt_ip[16], const __u8 rule_ip[16], const __u8 mask[16])
+{
+#pragma unroll
+    for (int i = 0; i < 16; i++) {
+        if (((pkt_ip[i] ^ rule_ip[i]) & mask[i]) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static __always_inline int tft6_rule_matches(struct tft6_rule_entry *rule, struct ipv6hdr *inner6,
+                                             __u16 src_port, __u16 dst_port, int has_ports)
+{
+    if ((rule->flags & TFT_F_REMOTE_IP) &&
+        !ipv6_mask_match((const __u8 *)&inner6->daddr, rule->remote_ip, rule->remote_mask))
+        return 0;
+
+    /* Protocol identifier/next header: the IPv6 Next Header field (no
+     * extension header walk; UE uplink media and signalling carry none). */
+    if ((rule->flags & TFT_F_PROTOCOL) && inner6->nexthdr != rule->protocol)
+        return 0;
+
+    if (rule->flags & TFT_F_LOCAL_PORT) {
+        if (!has_ports || src_port < rule->local_port_lo || src_port > rule->local_port_hi)
+            return 0;
+    }
+
+    if (rule->flags & TFT_F_REMOTE_PORT) {
+        if (!has_ports || dst_port < rule->remote_port_lo || dst_port > rule->remote_port_hi)
+            return 0;
+    }
+
+    return 1;
+}
+
 /* ── Program ──────────────────────────────────────────────────────────────── */
 
 /* Outer header size: IP(20) + UDP(8) + GTP-U(8) = 36 bytes. */
@@ -212,7 +277,8 @@ static __always_inline void count_ul(__u32 teid, __u32 len)
 }
 
 /* Inner IPv6 (IPv6 PDN): same outer IPv4/UDP/GTP-U headers as the IPv4 path.
- * No TFT rules: uplink goes on the default bearer TEID.
+ * The bearer is selected with the UE's uplink TFT rules (tft6_rule_map) as in
+ * the IPv4 path; without a match the packet goes on the default bearer TEID.
  *
  * BPF_ADJ_ROOM_NET inserts the room after the 40-octet IPv6 header, so the
  * IPv6 header is written again after the outer headers, as the IPv4 path does.
@@ -238,6 +304,45 @@ static __always_inline int tc_gtpu_encap_v6(struct __sk_buff *skb)
     }
 
     __u32 selected_teid = sess->ul_teid;
+    __u8 best_precedence = 255;
+    int has_ports = 0;
+    __u16 src_port = 0;
+    __u16 dst_port = 0;
+    if (inner6.nexthdr == IPPROTO_TCP || inner6.nexthdr == IPPROTO_UDP) {
+        __u16 ports[2] = {};
+        if (bpf_skb_load_bytes_relative(skb, sizeof(struct ipv6hdr), &ports, sizeof(ports), BPF_HDR_START_NET) == 0) {
+            src_port = bpf_ntohs(ports[0]);
+            dst_port = bpf_ntohs(ports[1]);
+            has_ports = 1;
+        }
+    }
+
+    __u32 rule_count = sess->rule_count;
+    if (rule_count > MAX_TFT_RULES)
+        rule_count = MAX_TFT_RULES;
+
+    for (__u32 i = 0; i < MAX_TFT_RULES; i++) {
+        if (i >= rule_count)
+            break;
+
+        struct tft6_rule_key rule_key = {};
+        __builtin_memcpy(rule_key.prefix, key.prefix, sizeof(rule_key.prefix));
+        rule_key.index = i;
+
+        struct tft6_rule_entry *rule = bpf_map_lookup_elem(&tft6_rule_map, &rule_key);
+        if (!rule)
+            continue;
+
+        if (rule->precedence >= best_precedence)
+            continue;
+
+        if (!tft6_rule_matches(rule, &inner6, src_port, dst_port, has_ports))
+            continue;
+
+        selected_teid = rule->ul_teid;
+        best_precedence = rule->precedence;
+    }
+
     __u32 inner_len = sizeof(struct ipv6hdr) + bpf_ntohs(inner6.payload_len);
     __u16 gtp_len  = (__u16)inner_len;
     __u16 udp_len  = 8 + 8 + gtp_len;
