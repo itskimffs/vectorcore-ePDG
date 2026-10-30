@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: lastSeen only after the message is authenticated (RFC 7296 §2.4).
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // CREATE_CHILD_SA handler — RFC 7296 §2.8 (CHILD SA rekey) and §2.18 (IKE SA rekey).
@@ -198,7 +202,6 @@ func (s *Server) handleCreateChildSA(conn *net.UDPConn, remote *net.UDPAddr, pkt
 		s.log.Warn("CREATE_CHILD_SA: SA not established", "state", sa.state, "remote", remote)
 		return
 	}
-	sa.lastSeen = time.Now()
 	natt := sa.natT
 
 	innerType, plain, err := decryptSK(sa.saKey, pkt)
@@ -206,6 +209,7 @@ func (s *Server) handleCreateChildSA(conn *net.UDPConn, remote *net.UDPAddr, pkt
 		s.log.Warn("CREATE_CHILD_SA: decrypt failed", "err", err, "remote", remote)
 		return
 	}
+	sa.lastSeen = time.Now()
 
 	pl, err := parseChildSAPayloads(innerType, plain)
 	if err != nil {
