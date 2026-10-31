@@ -1,5 +1,25 @@
 # VectorCore ePDG
 
+> **This is a heavily modified fork.** It is forked from
+> [vectorcore-mobile/vectorcore-ePDG](https://github.com/vectorcore-mobile/vectorcore-ePDG)
+> at upstream commit `76a929c` and maintained by itskimffs for a lab VoWiFi core
+> (Open5GS SMF/UPF, Kamailio IMS). It is not affiliated with or endorsed by the
+> upstream project, and its behaviour differs from upstream in several areas:
+>
+> - IKEv2: DH group 2, RFC 5998 EAP-only authentication, NAT-T port handling,
+>   DPD retransmission with the same Message ID, and INVALID_IKE_SPI answers for
+>   unknown IKE SAs (RFC 7296)
+> - PDN connections: IPv6 and IPv4v6 PDN connections (one CHILD SA for both
+>   families), PDN_TYPE_IPv4_ONLY_ALLOWED / PDN_TYPE_IPv6_ONLY_ALLOWED
+>   (TS 24.302 §7.4.1)
+> - Datapath: per-UE XFRM reqid, inner IPv6 and IPv4v6 in the XDP/TC programs,
+>   uplink TFT for IPv6 and TFT component types per TS 24.008 Table 10.5.162
+> - Operations: Prometheus metrics on `/metrics` by PDN type and QCI
+>
+> Every modified file carries a notice, and [NOTICE](NOTICE) lists all changes.
+> The changes are tested in that lab with a small set of handsets, not in
+> production. The upstream description below is kept as it was.
+
 VectorCore ePDG is a production-grade Evolved Packet Data Gateway written in Go. It implements the full VoWiFi control plane and BPF datapath as a single self-contained binary. 
 
 ## What It Does

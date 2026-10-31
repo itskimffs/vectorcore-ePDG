@@ -61,3 +61,4 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   internal/gtpu/metrics.go, internal/gtpu/bpf/xdp_gtpu_decap.c, internal/session/types.go,
   internal/session/manager.go, internal/api/models.go, internal/api/clients.go,
   internal/api/sessions.go, internal/config/config.go, config/epdg.yaml, docs/API.md and tests)
+- Fork notice at the top of README.md
