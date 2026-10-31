@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: release all sessions on shutdown.
+// Modified by itskimffs (2026-10), see NOTICE: release all sessions on shutdown; IKE SA Delete when the PGW releases the PDN connection.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -130,14 +130,22 @@ func main() {
 		}
 	}()
 
+	// releaseIKE tears down the UE's IKE SA when the PGW has released the PDN
+	// connection; ikeSrv is set below, before any session can exist.
+	var ikeSrv *ikev2.Server
+	releaseIKE := func(sessionID string, sendSTR bool, reason string) {
+		if ikeSrv != nil {
+			ikeSrv.ReleaseSessionByNetwork(sessionID, sendSTR, reason)
+		}
+	}
 	s2bClient.SetDeleteSessionHandler(func(ctx context.Context, event s2b.DeleteSessionEvent) {
-		handlePGWDelete(ctx, manager, gtpuManager, s2bClient, swmClient, log.Logger, event)
+		handlePGWDelete(ctx, manager, gtpuManager, s2bClient, swmClient, log.Logger, event, releaseIKE)
 	})
 	s2bClient.SetDeleteBearerHandler(func(ctx context.Context, event s2b.DeleteBearerEvent) s2b.DeleteBearerResult {
-		return handlePGWDeleteBearer(ctx, manager, gtpuManager, s2bClient, log.Logger, event)
+		return handlePGWDeleteBearer(ctx, manager, gtpuManager, s2bClient, log.Logger, event, releaseIKE)
 	})
 
-	ikeSrv := ikev2.NewServer(&ikev2.Config{
+	ikeSrv = ikev2.NewServer(&ikev2.Config{
 		ListenAddr:   cfg.IKEv2.ListenAddr,
 		ListenAddrV6: cfg.IKEv2.ListenAddrV6,
 	}, log.Logger)
@@ -223,7 +231,11 @@ func waitComponent(log *slog.Logger, component string, timeout time.Duration, st
 // PGW-initiated event handlers (s2b callbacks)
 // ────────────────────────────────────────────────────────────────────────────
 
-func handlePGWDelete(ctx context.Context, manager *session.Manager, gtpuManager *gtpu.Manager, s2bClient *s2b.Client, swmClient *swm.Client, log *slog.Logger, event s2b.DeleteSessionEvent) {
+// releaseIKEFunc tears down the UE's IKE SA (IKE SA Delete to the UE, XFRM)
+// for a session the PGW has released; sendSTR also ends the SWm session.
+type releaseIKEFunc func(sessionID string, sendSTR bool, reason string)
+
+func handlePGWDelete(ctx context.Context, manager *session.Manager, gtpuManager *gtpu.Manager, s2bClient *s2b.Client, swmClient *swm.Client, log *slog.Logger, event s2b.DeleteSessionEvent, releaseIKE releaseIKEFunc) {
 	sess := manager.FindByLocalControlTEID(event.LocalControlTEID)
 	if sess == nil {
 		log.Info("PGW Delete Session matched no active session", "local_control_teid", event.LocalControlTEID)
@@ -235,6 +247,11 @@ func handlePGWDelete(ctx context.Context, manager *session.Manager, gtpuManager 
 	sess.RUnlock()
 
 	log.Info("PGW Delete Session", "session_id", sess.ID, "imsi", imsi, "is_handover", event.IsHandover)
+	// The UE is told first (its IKE SA's traffic selectors need the session);
+	// the STR is sent below.
+	if releaseIKE != nil {
+		releaseIKE(sess.ID, false, "pgw_delete_session")
+	}
 	cleanupSession(sess, gtpuManager, s2bClient, log, "pgw_deleted", false)
 	if swmClient != nil && swmSessionID != "" {
 		strCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -374,7 +391,7 @@ func handlePGWCreateBearer(ctx context.Context, manager *session.Manager, gtpuMa
 	return result
 }
 
-func handlePGWDeleteBearer(ctx context.Context, manager *session.Manager, gtpuManager *gtpu.Manager, s2bClient *s2b.Client, log *slog.Logger, event s2b.DeleteBearerEvent) s2b.DeleteBearerResult {
+func handlePGWDeleteBearer(ctx context.Context, manager *session.Manager, gtpuManager *gtpu.Manager, s2bClient *s2b.Client, log *slog.Logger, event s2b.DeleteBearerEvent, releaseIKE releaseIKEFunc) s2b.DeleteBearerResult {
 	sess := manager.FindByLocalControlTEID(event.LocalControlTEID)
 	if sess == nil {
 		log.Warn("PGW Delete Bearer matched no session", "local_control_teid", event.LocalControlTEID)
@@ -414,6 +431,11 @@ func handlePGWDeleteBearer(ctx context.Context, manager *session.Manager, gtpuMa
 				sess.Unlock()
 				// Session left in manager — fullTeardown sends USER_MOVED STR when UE sends IKE DELETE or DPD fires
 			} else {
+				// PGW-initiated PDN disconnection: release the UE's tunnel
+				// (IKE SA Delete) and end the SWm session, then the rest.
+				if releaseIKE != nil {
+					releaseIKE(sess.ID, true, "pgw_delete_default_bearer")
+				}
 				cleanupSession(sess, gtpuManager, s2bClient, log, "pgw_delete_default_bearer", false)
 				manager.Delete(sess.ID)
 			}

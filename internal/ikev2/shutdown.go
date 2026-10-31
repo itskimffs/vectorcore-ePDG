@@ -1,12 +1,17 @@
-// Added by itskimffs (2026-10), see NOTICE: release all sessions on shutdown.
+// Added by itskimffs (2026-10), see NOTICE: release all sessions on shutdown; IKE SA Delete when the PGW releases the PDN connection.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
 package ikev2
 
 import (
+	"context"
+	"errors"
+	"os"
 	"sync"
 	"time"
+
+	"vectorcore-epdg/internal/xfrm"
 
 	"github.com/free5gc/ike/message"
 )
@@ -110,4 +115,68 @@ func (s *Server) sendIKEDelete(sa *ikeSA) {
 	}
 	s.send(conn, sa.remoteAddr, out, sa.natT)
 	s.log.Info("IKE Delete sent to UE", "imsi", sa.imsi, "msg_id", sa.ourMsgID, "remote", sa.remoteAddr)
+}
+
+// ReleaseSessionByNetwork tears down the IKE SA of a PDN connection that the
+// PGW has already released (Delete Session Request, or Delete Bearer Request
+// for the default bearer): the UE gets the IKE SA Delete (TS 24.302 §7.4.3.1:
+// the ePDG releases the tunnel with an INFORMATIONAL request containing a
+// Delete payload), and the CHILD SA is removed from XFRM. The GTP-U and S2b
+// state is the caller's (already cleaned up, no Delete Session back to the
+// PGW); with sendSTR the SWm session is ended here too. Reports whether an
+// IKE SA was found.
+func (s *Server) ReleaseSessionByNetwork(sessionID string, sendSTR bool, reason string) bool {
+	if sessionID == "" {
+		return false
+	}
+	s.mu.RLock()
+	var sa *ikeSA
+	for _, cand := range s.sas {
+		if cand.sessionID == sessionID {
+			sa = cand
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if sa == nil {
+		return false
+	}
+
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	if sa.state == ikeStateDeleting || sa.sessionID != sessionID {
+		return false
+	}
+	if sa.state == ikeStateEstablished {
+		s.sendIKEDelete(sa)
+	}
+	sa.state = ikeStateDeleting
+	// The traffic selectors come from the session's PAAs, so this must run
+	// before the caller removes the session.
+	s.removeXFRMChildSA(sa)
+	if sa.pendingESPProp != nil && sa.localIP != nil {
+		pending := xfrm.ChildSAParams{
+			LocalIP:     sa.localIP,
+			RemoteIP:    sa.remoteAddr.IP,
+			InboundSPI:  sa.pendingLocalESPSPI,
+			OutboundSPI: sa.pendingPeerESPSPI,
+			NATT:        sa.natT,
+			NATTSrcPort: nattPort,
+			NATTDstPort: sa.remoteAddr.Port,
+			IfID:        xfrm.IfID,
+		}
+		if err := xfrm.RemoveChildSAStates(pending); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.log.Warn("network release: remove pending CHILD SA states failed", "err", err)
+		}
+	}
+	if sendSTR && s.swm != nil && sa.swmSessionID != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.swm.TerminateSession(ctx, sa.swmSessionID); err != nil {
+			s.log.Warn("network release: SWm STR failed", "err", err, "imsi", sa.imsi)
+		}
+		cancel()
+	}
+	s.deleteSA(sa.spiI)
+	s.log.Info("IKE SA torn down", "imsi", sa.imsi, "reason", reason, "spi_i", sa.spiI)
+	return true
 }
