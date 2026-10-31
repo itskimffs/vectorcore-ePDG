@@ -32,6 +32,7 @@ ikev2:
   half_open_sa_timeout: 30      # seconds an unauthenticated IKE SA may exist before expiry
   max_half_open_sas: 4096       # hard cap on unauthenticated IKE SAs tracked at once
   cookie_threshold: 2048        # half-open SA count at which RFC 7296 COOKIE is required
+  ipv4v6: true                  # IPv4v6 PDN when the UE asks for both INTERNAL_IP4_ADDRESS and INTERNAL_IP6_ADDRESS
 
 swm:
   # peer_addr/peer_port is the immediate Diameter peer.

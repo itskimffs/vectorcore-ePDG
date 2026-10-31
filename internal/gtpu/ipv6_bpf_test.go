@@ -74,7 +74,7 @@ func TestXDPDecapsInnerIPv6InUEPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &BPFDataplane{objs: *objs}
-	if err := d.AddTEID(teid, paa, pgwIP); err != nil {
+	if err := d.AddTEID(teid, paa, nil, pgwIP); err != nil {
 		t.Fatalf("AddTEID() error = %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestXDPIPv4TEIDDropsInnerIPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &BPFDataplane{objs: *objs}
-	if err := d.AddTEID(teid, net.IPv4(10, 41, 201, 9), pgwIP); err != nil {
+	if err := d.AddTEID(teid, net.IPv4(10, 41, 201, 9), nil, pgwIP); err != nil {
 		t.Fatal(err)
 	}
 	inner := ipv6Packet(net.ParseIP("fd2e::1"), net.ParseIP("fd2e:8dd5:6c93:2000::1"))
@@ -242,5 +242,45 @@ func TestTCEncapsulatesInnerIPv4Unchanged(t *testing.T) {
 	if len(out) != 14+36+len(inner) || !bytes.Equal(out[50:], inner) ||
 		binary.BigEndian.Uint32(out[46:50]) != ulTEID {
 		t.Fatalf("encapsulated frame = %x", out)
+	}
+}
+
+// TestXDPIPv4v6TEIDAcceptsBothFamilies: an IPv4v6 PDN connection's TEID
+// decapsulates inner IPv4 to its IPv4 address and inner IPv6 to its /64.
+func TestXDPIPv4v6TEIDAcceptsBothFamilies(t *testing.T) {
+	objs := loadTestGtpuDecap(t)
+
+	localIP := net.IPv4(10, 10, 41, 50)
+	pgwIP := net.IPv4(10, 10, 41, 41)
+	const teid = uint32(0x3002)
+	if err := objs.ConfigMap.Put(configKeyLocalIP, binary.LittleEndian.Uint32(localIP.To4())); err != nil {
+		t.Fatal(err)
+	}
+	d := &BPFDataplane{objs: *objs}
+	paa4, paa6 := net.IPv4(10, 41, 201, 7), net.ParseIP("fd2e:8dd5:6c93:2000::7")
+	if err := d.AddTEID(teid, paa4, paa6, pgwIP); err != nil {
+		t.Fatalf("AddTEID() error = %v", err)
+	}
+
+	inner6 := ipv6Packet(net.ParseIP("fd2e:8dd5:6c93:1041::60"), net.ParseIP("fd2e:8dd5:6c93:2000::abcd"))
+	if ret, _, err := objs.GtpuDecapFunc.Test(buildGPDU6(pgwIP, localIP, teid, inner6)); err != nil || ret != xdpActionPass {
+		t.Fatalf("inner IPv6 in the /64: verdict = %d (err %v), want XDP_PASS", ret, err)
+	}
+	ipv4Inner := func(dst net.IP) []byte {
+		p := make([]byte, 20)
+		p[0] = 0x45
+		binary.BigEndian.PutUint16(p[2:4], 20)
+		copy(p[16:20], dst.To4())
+		return p
+	}
+	if ret, _, err := objs.GtpuDecapFunc.Test(buildGPDU6(pgwIP, localIP, teid, ipv4Inner(paa4))); err != nil || ret != xdpActionPass {
+		t.Fatalf("inner IPv4 to the PAA: verdict = %d (err %v), want XDP_PASS", ret, err)
+	}
+	if ret, _, err := objs.GtpuDecapFunc.Test(buildGPDU6(pgwIP, localIP, teid, ipv4Inner(net.IPv4(10, 41, 201, 8)))); err != nil || ret != xdpActionDrop {
+		t.Fatalf("inner IPv4 to another address: verdict = %d (err %v), want XDP_DROP", ret, err)
+	}
+	other6 := ipv6Packet(net.ParseIP("fd2e::1"), net.ParseIP("fd2e:8dd5:6c93:2001::1"))
+	if ret, _, err := objs.GtpuDecapFunc.Test(buildGPDU6(pgwIP, localIP, teid, other6)); err != nil || ret != xdpActionDrop {
+		t.Fatalf("inner IPv6 outside the /64: verdict = %d (err %v), want XDP_DROP", ret, err)
 	}
 }

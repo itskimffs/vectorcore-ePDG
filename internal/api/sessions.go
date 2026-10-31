@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: ue_ip6 for IPv4v6 PDN connections.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package api
 
 import (
@@ -30,13 +34,14 @@ func (s *Server) registerSessions(api huma.API) {
 func sessionDetail(sess *session.Session) SessionDetail {
 	sess.RLock()
 	defer sess.RUnlock()
-	ueIP := ""
+	ueIP, ueIP6 := "", ""
 	if sess.S2B != nil {
-		ueIP = sess.S2B.PAA
+		ueIP, ueIP6 = sess.S2B.PAA, sess.S2B.PAA6
 	}
 	out := SessionDetail{
 		IMSI:    sess.IMSI,
 		UEIP:    ueIP,
+		UEIP6:   ueIP6,
 		OuterIP: sess.OuterIP,
 		APN:     sess.APN,
 		State:   string(sess.State),

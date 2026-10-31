@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context.
+// Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context; IPv6 address of an IPv4v6 PDN connection.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -153,6 +153,7 @@ type APNProfile struct {
 
 type S2BContext struct {
 	PAA              string
+	PAA6             string // IPv6 address of an IPv4v6 PDN connection (PAA is then IPv4); "" otherwise
 	PGWControlTEID   uint32
 	PGWControlIP     net.IP // from Create Session Response F-TEID IE; used for DeleteSession routing
 	PGWUserTEID      uint32

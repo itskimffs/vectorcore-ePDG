@@ -1,5 +1,6 @@
 // Modified by itskimffs (2026-10), see NOTICE: unique XFRM reqid per UE (derived from the PAA) so several UEs behind one NAT get their own SA;
-// IPv6 inner traffic over an IPv4 tunnel (IPv6 SA selector, reqid from the IPv6 prefix).
+// IPv6 inner traffic over an IPv4 tunnel (IPv6 SA selector, reqid from the IPv6 prefix);
+// IPv4v6 CHILD SAs (both inner families in one SA, XFRM_STATE_AF_UNSPEC, policies per family).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -55,6 +56,12 @@ type ChildSAParams struct {
 	LocalTS  *net.IPNet // ePDG inner: 0.0.0.0/0 (accepts all)
 	RemoteTS *net.IPNet // UE inner: PAA/32 (PGW-assigned address)
 
+	// IPv4v6 PDN connection: the IPv6 selectors (::/0 and the UE's /64) next to
+	// the IPv4 ones in LocalTS/RemoteTS. Both inner families then use the same
+	// SA pair, installed with XFRM_STATE_AF_UNSPEC, and policies per family.
+	LocalTS6  *net.IPNet
+	RemoteTS6 *net.IPNet
+
 	// IfID, when non-zero, ties these SAs to an XFRM virtual interface (type xfrm)
 	// with the matching if_id. Decrypted uplink packets are then delivered to that
 	// interface where TC-BPF can encapsulate them. XFRM policies are skipped when
@@ -71,40 +78,63 @@ func InstallChildSA(p ChildSAParams) error {
 
 	inbound, outbound := buildSAs(p, localIP, remoteIP)
 
-	if err := netlink.XfrmStateAdd(inbound); err != nil {
+	if err := addState(inbound, dualStack(p)); err != nil {
 		return fmt.Errorf("xfrm: add inbound SA (spi=%08x): %w", p.InboundSPI, err)
 	}
 	markInbound(p.InboundSPI)
-	if err := netlink.XfrmStateAdd(outbound); err != nil {
+	if err := addState(outbound, dualStack(p)); err != nil {
 		_ = netlink.XfrmStateDel(inbound)
 		unmarkInbound(p.InboundSPI)
 		return fmt.Errorf("xfrm: add outbound SA (spi=%08x): %w", p.OutboundSPI, err)
 	}
 
-	inPol, fwdPol, outPol := buildPolicies(p, localIP, remoteIP)
-
-	if err := netlink.XfrmPolicyAdd(inPol); err != nil {
-		_ = netlink.XfrmStateDel(inbound)
-		_ = netlink.XfrmStateDel(outbound)
-		unmarkInbound(p.InboundSPI)
-		return fmt.Errorf("xfrm: add inbound policy: %w", err)
-	}
-	if err := netlink.XfrmPolicyAdd(fwdPol); err != nil {
-		_ = netlink.XfrmPolicyDel(inPol)
-		_ = netlink.XfrmStateDel(inbound)
-		_ = netlink.XfrmStateDel(outbound)
-		unmarkInbound(p.InboundSPI)
-		return fmt.Errorf("xfrm: add uplink forward policy: %w", err)
-	}
-	if err := netlink.XfrmPolicyAdd(outPol); err != nil {
-		_ = netlink.XfrmPolicyDel(fwdPol)
-		_ = netlink.XfrmPolicyDel(inPol)
-		_ = netlink.XfrmStateDel(inbound)
-		_ = netlink.XfrmStateDel(outbound)
-		unmarkInbound(p.InboundSPI)
-		return fmt.Errorf("xfrm: add outbound policy: %w", err)
+	policies := buildPolicySet(p, localIP, remoteIP)
+	for i, pol := range policies {
+		if err := netlink.XfrmPolicyAdd(pol); err != nil {
+			for j := i - 1; j >= 0; j-- {
+				_ = netlink.XfrmPolicyDel(policies[j])
+			}
+			_ = netlink.XfrmStateDel(inbound)
+			_ = netlink.XfrmStateDel(outbound)
+			unmarkInbound(p.InboundSPI)
+			return fmt.Errorf("xfrm: add %s policy (%s): %w", policyDirName(pol.Dir), pol.Dst, err)
+		}
 	}
 	return nil
+}
+
+// policyDirName names a policy direction for error messages.
+func policyDirName(d netlink.Dir) string {
+	switch d {
+	case netlink.XFRM_DIR_IN:
+		return "inbound"
+	case netlink.XFRM_DIR_FWD:
+		return "uplink forward"
+	case netlink.XFRM_DIR_OUT:
+		return "outbound"
+	}
+	return fmt.Sprintf("dir %d", d)
+}
+
+// dualStack reports whether the CHILD SA carries both inner families.
+func dualStack(p ChildSAParams) bool {
+	return p.RemoteTS6 != nil && p.LocalTS6 != nil
+}
+
+// buildPolicySet returns the in, fwd and out policies for the CHILD SA, and for
+// an IPv4v6 CHILD SA also the three IPv6 policies (same templates and reqid).
+func buildPolicySet(p ChildSAParams, localIP, remoteIP net.IP) []*netlink.XfrmPolicy {
+	inPol, fwdPol, outPol := buildPolicies(p, localIP, remoteIP)
+	set := []*netlink.XfrmPolicy{inPol, fwdPol, outPol}
+	if dualStack(p) {
+		p6 := p
+		p6.LocalTS, p6.RemoteTS = p.LocalTS6, p.RemoteTS6
+		in6, fwd6, out6 := buildPolicies(p6, localIP, remoteIP)
+		r := reqidFor(p)
+		in6.Tmpls[0].Reqid, fwd6.Tmpls[0].Reqid, out6.Tmpls[0].Reqid = r, r, r
+		set = append(set, in6, fwd6, out6)
+	}
+	return set
 }
 
 // ESPStats aggregates kernel ESP SA counters across all CHILD SAs this ePDG
@@ -196,10 +226,10 @@ func RemoveChildSA(p ChildSAParams) error {
 		}
 	}
 
-	inPol, fwdPol, outPol := buildPolicies(p, localIP, remoteIP)
-	save(netlink.XfrmPolicyDel(outPol))
-	save(netlink.XfrmPolicyDel(fwdPol))
-	save(netlink.XfrmPolicyDel(inPol))
+	policies := buildPolicySet(p, localIP, remoteIP)
+	for i := len(policies) - 1; i >= 0; i-- {
+		save(netlink.XfrmPolicyDel(policies[i]))
+	}
 	save(netlink.XfrmStateDel(outbound))
 	save(netlink.XfrmStateDel(inbound))
 	unmarkInbound(p.InboundSPI)
@@ -285,7 +315,11 @@ func buildSAs(p ChildSAParams, localIP, remoteIP net.IP) (*netlink.XfrmState, *n
 	// Inner IPv6 over an IPv4 (or IPv6) tunnel: the SA selector must carry the
 	// inner family, otherwise the kernel sets it to the outer family
 	// (xfrm_user.c copy_from_user_state) and only that inner family is accepted.
-	if sel := innerSelector(p); sel != nil {
+	// IPv4v6: no selector at all; addState sets XFRM_STATE_AF_UNSPEC so the
+	// kernel keeps the selector family unspecified and accepts both inner
+	// families (xfrm_user.c copy_from_user_state, xfrm_state.c
+	// __xfrm_init_state: inner_mode plus inner_mode_iaf).
+	if sel := innerSelector(p); sel != nil && !dualStack(p) {
 		inbound.Selector, outbound.Selector = sel, sel
 	}
 	r := reqidFor(p)
@@ -347,11 +381,11 @@ func AddChildSAStates(p ChildSAParams) error {
 		return err
 	}
 	inbound, outbound := buildSAs(p, localIP, remoteIP)
-	if err := netlink.XfrmStateAdd(inbound); err != nil {
+	if err := addState(inbound, dualStack(p)); err != nil {
 		return fmt.Errorf("xfrm: add inbound SA (spi=%08x): %w", p.InboundSPI, err)
 	}
 	markInbound(p.InboundSPI)
-	if err := netlink.XfrmStateAdd(outbound); err != nil {
+	if err := addState(outbound, dualStack(p)); err != nil {
 		_ = netlink.XfrmStateDel(inbound)
 		unmarkInbound(p.InboundSPI)
 		return fmt.Errorf("xfrm: add outbound SA (spi=%08x): %w", p.OutboundSPI, err)

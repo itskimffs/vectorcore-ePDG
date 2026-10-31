@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6).
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6); IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -71,6 +71,11 @@ const (
 	ifaceS2BPGWGTPU            uint8 = 33
 	defaultEBI                 uint8 = 5
 	defaultBearerQCI           uint8 = 8
+
+	// TS 29.274 §8.4 Table 8.4-1: the PGW assigned a single address family to
+	// an IPv4v6 request.
+	causeNewPDNTypeNetworkPreference uint8 = 18
+	causeNewPDNTypeSingleAddrBearer  uint8 = 19
 
 	// Create Bearer Response Bearer Context: the ePDG's S2b GTP-U endpoint.
 	// Cisco StarOS requires instance 8 for the S2b-U ePDG F-TEID (verified against live PGW).
@@ -403,10 +408,22 @@ func paaIPv6RequestIE() ie {
 	return ie{Type: iePAA, Payload: payload}
 }
 
+// paaIPv4v6RequestIE requests a dynamic IPv4 address and IPv6 prefix (TS 29.274
+// §8.14: PDN type 3, IPv6 prefix length, 16 octets IPv6 prefix and interface
+// identifier, 4 octets IPv4 address, all zero).
+func paaIPv4v6RequestIE() ie {
+	payload := make([]byte, 22)
+	payload[0] = pdnTypeIPv4v6
+	return ie{Type: iePAA, Payload: payload}
+}
+
 // paaRequestIE returns the PAA request for the PDN type the UE asked for.
 func paaRequestIE(pdnType uint8) ie {
-	if pdnType == pdnTypeIPv6 {
+	switch pdnType {
+	case pdnTypeIPv6:
 		return paaIPv6RequestIE()
+	case pdnTypeIPv4v6:
+		return paaIPv4v6RequestIE()
 	}
 	return paaIPv4RequestIE()
 }
@@ -437,6 +454,25 @@ func parsePAA(ies []ie) net.IP {
 		return nil
 	}
 	return net.IPv4(paa.Payload[1], paa.Payload[2], paa.Payload[3], paa.Payload[4])
+}
+
+// parsePAAType returns the PDN type of the PAA in a response (0 when absent).
+func parsePAAType(ies []ie) uint8 {
+	paa, ok := findIE(ies, iePAA, 0)
+	if !ok || len(paa.Payload) == 0 {
+		return 0
+	}
+	return paa.Payload[0] & 0x07
+}
+
+// parsePAAIPv4v6 returns the IPv4 address of a PAA of PDN type IPv4v6
+// (TS 29.274 §8.14: octets 23-26, after the IPv6 prefix length and address).
+func parsePAAIPv4v6(ies []ie) net.IP {
+	paa, ok := findIE(ies, iePAA, 0)
+	if !ok || len(paa.Payload) < 22 || paa.Payload[0]&0x07 != pdnTypeIPv4v6 {
+		return nil
+	}
+	return net.IPv4(paa.Payload[18], paa.Payload[19], paa.Payload[20], paa.Payload[21])
 }
 
 // parsePAAIPv6 returns the IPv6 address (prefix and interface identifier) and the

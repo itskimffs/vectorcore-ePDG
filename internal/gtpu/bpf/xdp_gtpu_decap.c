@@ -1,4 +1,4 @@
-/* Modified by itskimffs (2026-10), see NOTICE: inner IPv6 (the UE's /64 prefix) in teid_map.
+/* Modified by itskimffs (2026-10), see NOTICE: inner IPv6 (the UE's /64 prefix) in teid_map; IPv4v6 PDN connections.
  * This file is part of vectorcore-ePDG, licensed under the Apache License,
  * Version 2.0 (see LICENSE).
  *
@@ -97,7 +97,7 @@ struct teid_entry {
     __u8 paa[4];
     __u8 pgw_addr[4];
     __u8 paa6[8];   /* IPv6 PDN: the UE's /64 prefix (first 8 octets) */
-    __u8 is_v6;     /* 1: IPv6 PDN, inner dst is checked against paa6 */
+    __u8 is_v6;     /* inner families: 0 IPv4 (paa), 1 IPv6 (paa6), 2 IPv4v6 (both) */
     __u8 _pad[3];
 };
 
@@ -203,7 +203,7 @@ int gtpu_decap_func(struct xdp_md *ctx) {
         __builtin_memcpy(&dst_lo, (const __u8 *)&inner6->daddr + 4, 4);
         __builtin_memcpy(&pfx_hi, entry->paa6, 4);
         __builtin_memcpy(&pfx_lo, entry->paa6 + 4, 4);
-        if (!entry->is_v6 || dst_hi != pfx_hi || dst_lo != pfx_lo) {
+        if (entry->is_v6 == 0 || dst_hi != pfx_hi || dst_lo != pfx_lo) {
             stat_inc(STAT_PAA_MISMATCH);
             return XDP_DROP;
         }
@@ -215,7 +215,7 @@ int gtpu_decap_func(struct xdp_md *ctx) {
 
         __be32 paa_be;
         __builtin_memcpy(&paa_be, entry->paa, 4);
-        if (entry->is_v6 || inner->daddr != paa_be) {
+        if (entry->is_v6 == 1 || inner->daddr != paa_be) {
             stat_inc(STAT_PAA_MISMATCH);
             return XDP_DROP;
         }

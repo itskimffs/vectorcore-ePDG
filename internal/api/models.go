@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: ue_ip6 for IPv4v6 PDN connections.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package api
 
 import "time"
@@ -6,6 +10,7 @@ import "time"
 type ClientSummary struct {
 	IMSI    string `json:"imsi"`
 	UEIP    string `json:"ue_ip"`
+	UEIP6   string `json:"ue_ip6,omitempty"` // IPv4v6 PDN connection: the IPv6 address
 	OuterIP string `json:"outer_ip"`
 	APN     string `json:"apn"`
 	State   string `json:"state"`
@@ -34,6 +39,7 @@ type S2BDetail struct {
 type SessionDetail struct {
 	IMSI    string        `json:"imsi"`
 	UEIP    string        `json:"ue_ip"`
+	UEIP6   string        `json:"ue_ip6,omitempty"` // IPv4v6 PDN connection: the IPv6 address
 	OuterIP string        `json:"outer_ip"`
 	APN     string        `json:"apn"`
 	State   string        `json:"state"`
@@ -61,6 +67,7 @@ type BearerDiag struct {
 type ClientDiag struct {
 	IMSI             string       `json:"imsi"`
 	UEIP             string       `json:"ue_ip"`
+	UEIP6            string       `json:"ue_ip6,omitempty"` // IPv4v6 PDN connection: the IPv6 address
 	OuterIP          string       `json:"outer_ip"`
 	APN              string       `json:"apn"`
 	State            string       `json:"state"`

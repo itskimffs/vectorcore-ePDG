@@ -48,3 +48,16 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   answered with an unprotected response containing N(INVALID_IKE_SPI), with the IKE SPIs, Message ID
   and exchange type copied and rate limited; responses for unknown IKE SAs are not answered
   (RFC 7296 1.5, 2.21.4) (internal/ikev2/invalid_spi.go, internal/ikev2/server.go and tests)
+- IPv4v6 PDN connections (ikev2.ipv4v6, default on): when the UE requests INTERNAL_IP4_ADDRESS and
+  INTERNAL_IP6_ADDRESS, PDN type IPv4v6 on S2b (a single family assigned with cause 18/19 is
+  accepted and answered with PDN_TYPE_IPv4_ONLY_ALLOWED or PDN_TYPE_IPv6_ONLY_ALLOWED), both
+  addresses and the IPv4 and IPv6 DNS/P-CSCF attributes in CFG_REPLY, IPv4 and IPv6 traffic
+  selectors in one CHILD SA, the SA pair installed with XFRM_STATE_AF_UNSPEC and policies per
+  family, both families in the XDP/TC programs and routes, uplink TFT rules per family, PDN type
+  ipv4v6 in the metrics and ue_ip6 in the admin API (TS 24.302 7.2.2/7.4.1/8.1.2.2, TS 29.274 8.4/8.14,
+  RFC 7296 2.9) (internal/s2b/codec.go, internal/s2b/client.go, internal/ikev2/auth.go,
+  internal/ikev2/paa6.go, internal/ikev2/inform.go, internal/ikev2/rekey.go, internal/xfrm/xfrm.go,
+  internal/xfrm/afunspec.go, internal/gtpu/dataplane.go, internal/gtpu/bpf_loader.go,
+  internal/gtpu/metrics.go, internal/gtpu/bpf/xdp_gtpu_decap.c, internal/session/types.go,
+  internal/session/manager.go, internal/api/models.go, internal/api/clients.go,
+  internal/api/sessions.go, internal/config/config.go, config/epdg.yaml, docs/API.md and tests)

@@ -1,4 +1,4 @@
-// Added by itskimffs (2026-10), see NOTICE: IPv6 PDN connections over SWu/S2b.
+// Added by itskimffs (2026-10), see NOTICE: IPv6 PDN connections over SWu/S2b; IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"vectorcore-epdg/internal/pco"
+	"vectorcore-epdg/internal/xfrm"
 
 	"github.com/free5gc/ike/message"
 )
@@ -28,10 +29,49 @@ const (
 )
 
 // wantsIPv6PDN reports whether the PDN connection is set up as IPv6: the UE
-// asked only for INTERNAL_IP6_ADDRESS. A request for both IPv4 and IPv6 is
-// answered with IPv4 and PDN_TYPE_IPv4_ONLY_ALLOWED (TS 24.302 §7.4.1).
+// asked only for INTERNAL_IP6_ADDRESS.
 func (sa *ikeSA) wantsIPv6PDN() bool {
 	return sa.cpWantsIP6 && !sa.cpWantsIP
+}
+
+// wantsIPv4v6PDN reports whether the PDN connection is set up as IPv4v6: the
+// UE asked for INTERNAL_IP4_ADDRESS and INTERNAL_IP6_ADDRESS (TS 24.302 §7.2.2,
+// §7.4.1) and ikev2.ipv4v6 is enabled. Otherwise such a request is answered
+// with IPv4 and PDN_TYPE_IPv4_ONLY_ALLOWED.
+func (s *Server) wantsIPv4v6PDN(sa *ikeSA) bool {
+	return sa.cpWantsIP && sa.cpWantsIP6 && s.fullCfg != nil && s.fullCfg.IKEv2.IPv4v6
+}
+
+// sessionPAAs returns the PAA of the session's PDN connection and, for an
+// IPv4v6 PDN connection, its IPv6 address (nil otherwise).
+func (s *Server) sessionPAAs(sessionID string) (paa, paa6 net.IP) {
+	if s.sessions == nil || sessionID == "" {
+		return nil, nil
+	}
+	sess := s.sessions.Get(sessionID)
+	if sess == nil {
+		return nil, nil
+	}
+	sess.RLock()
+	defer sess.RUnlock()
+	if sess.S2B == nil {
+		return nil, nil
+	}
+	paa = net.ParseIP(sess.S2B.PAA)
+	if sess.S2B.PAA6 != "" {
+		paa6 = net.ParseIP(sess.S2B.PAA6)
+	}
+	return paa, paa6
+}
+
+// setChildTrafficSelectors fills the inner XFRM selectors for the PAA and, for
+// an IPv4v6 PDN connection, the IPv6 selectors for paa6.
+func setChildTrafficSelectors(p *xfrm.ChildSAParams, paa, paa6 net.IP) {
+	p.LocalTS, p.RemoteTS = paaTrafficSelectors(paa)
+	p.LocalTS6, p.RemoteTS6 = nil, nil
+	if paa6 != nil && paa.To4() != nil {
+		p.LocalTS6, p.RemoteTS6 = paaTrafficSelectors(paa6)
+	}
 }
 
 // paaTrafficSelectors returns the inner XFRM selectors for a PAA:
@@ -88,22 +128,53 @@ func appendIPv6FromPCO(cp *message.Configuration, decoded *pco.Decoded, sa *ikeS
 // buildTSResponse6 adds TSi (the UE's /64 prefix) and TSr (all IPv6) for an
 // IPv6 PDN connection.
 func buildTSResponse6(container *message.IKEPayloadContainer, paa net.IP) {
+	tsi := container.BuildTrafficSelectorInitiator()
+	addTS6(&tsi.TrafficSelectors, paa)
+	tsr := container.BuildTrafficSelectorResponder()
+	addTSAll6(&tsr.TrafficSelectors)
+}
+
+// buildTSResponseIPv4v6 adds TSi (the UE's IPv4 address and /64 prefix) and
+// TSr (all IPv4 and all IPv6) for an IPv4v6 PDN connection: one CHILD SA for
+// both families (RFC 7296 §2.9, TS 24.302 §7.2.2).
+func buildTSResponseIPv4v6(container *message.IKEPayloadContainer, paa4, paa6 net.IP) {
+	tsi := container.BuildTrafficSelectorInitiator()
+	tsi.TrafficSelectors.BuildIndividualTrafficSelector(
+		message.TS_IPV4_ADDR_RANGE, message.IPProtocolAll, 0, 65535, []byte(paa4.To4()), []byte(paa4.To4()))
+	addTS6(&tsi.TrafficSelectors, paa6)
+	tsr := container.BuildTrafficSelectorResponder()
+	tsr.TrafficSelectors.BuildIndividualTrafficSelector(
+		message.TS_IPV4_ADDR_RANGE, message.IPProtocolAll, 0, 65535,
+		[]byte{0, 0, 0, 0}, []byte{255, 255, 255, 255})
+	addTSAll6(&tsr.TrafficSelectors)
+}
+
+// addTS6 adds the /64 prefix of paa as an IPv6 address range.
+func addTS6(ts *message.IndividualTrafficSelectorContainer, paa net.IP) {
 	mask := net.CIDRMask(paaPrefixLen6, 128)
 	start := paa.To16().Mask(mask)
 	end := make(net.IP, net.IPv6len)
 	for i := range end {
 		end[i] = start[i] | ^mask[i]
 	}
-
-	tsi := container.BuildTrafficSelectorInitiator()
-	tsi.TrafficSelectors.BuildIndividualTrafficSelector(
+	ts.BuildIndividualTrafficSelector(
 		message.TS_IPV6_ADDR_RANGE, message.IPProtocolAll, 0, 65535, []byte(start), []byte(end))
+}
 
+// addTSAll6 adds the whole IPv6 address range.
+func addTSAll6(ts *message.IndividualTrafficSelectorContainer) {
 	allOnes := make([]byte, net.IPv6len)
 	for i := range allOnes {
 		allOnes[i] = 0xff
 	}
-	tsr := container.BuildTrafficSelectorResponder()
-	tsr.TrafficSelectors.BuildIndividualTrafficSelector(
+	ts.BuildIndividualTrafficSelector(
 		message.TS_IPV6_ADDR_RANGE, message.IPProtocolAll, 0, 65535, make([]byte, net.IPv6len), allOnes)
+}
+
+// ipString renders an optional address ("" when nil).
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
