@@ -1,3 +1,4 @@
+// Modified by itskimffs (2026-10), see NOTICE: PDN-Type from APN-Configuration (TS 29.272 §7.3.62).
 package swm
 
 import (
@@ -67,6 +68,10 @@ type APNProfile struct {
 	AMBRUplink   uint32
 	AMBRDownlink uint32
 	AMBRPresent  bool
+	// PDNType is the subscribed PDN type from the APN-Configuration
+	// (TS 29.272 §7.3.62: 0 IPv4, 1 IPv6, 2 IPv4v6, 3 IPv4_OR_IPv6).
+	PDNType        uint32
+	PDNTypePresent bool
 }
 
 type Client struct {
@@ -600,6 +605,9 @@ func parseAPNProfileFromAVPs(avps []diameter.AVP, requested string) *APNProfile 
 			continue
 		}
 		p := &APNProfile{APN: apn}
+		if t, ok := diameter.AVPUint32(children, diameter.AVPPDNType, diameter.Vendor3GPP); ok {
+			p.PDNType, p.PDNTypePresent = t, true
+		}
 		if ambr, ok := diameter.FindAVP(children, diameter.AVPAMBR, diameter.Vendor3GPP); ok {
 			if ambrChildren, err := diameter.DecodeAVPs(ambr.Data); err == nil {
 				if ul, ok := avpUint32AnyVendor(ambrChildren, diameter.AVPMaxRequestedBandwidthUL, 0, diameter.Vendor3GPP); ok {

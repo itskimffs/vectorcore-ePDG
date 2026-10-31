@@ -73,3 +73,11 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   Delete payload for the IKE SA (TS 24.302 7.4.3.1), the CHILD SA is removed from XFRM and, for the
   default bearer, the SWm session is ended with STR (cmd/epdg/main.go, internal/ikev2/shutdown.go
   and tests)
+- Subscribed PDN type: the PDN-Type in the APN-Configuration from SWm (TS 29.272 7.3.62) limits
+  the PDN type requested on S2b: IPv4v6 requested with an IPv4 or IPv6 subscription is downgraded
+  to the subscribed family and answered with PDN_TYPE_IPv4_ONLY_ALLOWED or
+  PDN_TYPE_IPv6_ONLY_ALLOWED, IPv4_OR_IPv6 picks IPv4 when requested, a requested family the
+  subscription does not allow is rejected with PDN_CONNECTION_REJECTION (TS 24.302 7.4.1.1,
+  7.4.1.2); without PDN-Type the UE's request is used (internal/diameter/message.go,
+  internal/swm/client.go, internal/session/types.go, internal/ikev2/auth.go,
+  internal/ikev2/sa.go, internal/ikev2/paa6.go, internal/ikev2/pdntype.go and tests)

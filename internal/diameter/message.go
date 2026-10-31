@@ -1,3 +1,4 @@
+// Modified by itskimffs (2026-10), see NOTICE: PDN-Type AVP code (TS 29.272 §7.3.62).
 package diameter
 
 import (
@@ -86,6 +87,7 @@ const (
 	AVPServiceSelection            uint32 = 493
 	AVPAPNConfiguration            uint32 = 1430
 	AVPAMBR                        uint32 = 1435
+	AVPPDNType                     uint32 = 1456 // TS 29.272 §7.3.62
 	AVPNon3GPPUserData             uint32 = 1500
 	AVPMaxRequestedBandwidthUL     uint32 = 516
 	AVPMaxRequestedBandwidthDL     uint32 = 515

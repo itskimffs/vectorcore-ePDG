@@ -1,4 +1,5 @@
-// Added by itskimffs (2026-10), see NOTICE: IPv6 PDN connections over SWu/S2b; IPv4v6 PDN connections.
+// Added by itskimffs (2026-10), see NOTICE: IPv6 PDN connections over SWu/S2b; IPv4v6 PDN connections;
+// PDN type limited by the subscription.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -29,9 +30,11 @@ const (
 )
 
 // wantsIPv6PDN reports whether the PDN connection is set up as IPv6: the UE
-// asked only for INTERNAL_IP6_ADDRESS.
+// asked only for INTERNAL_IP6_ADDRESS, or for both and the subscription allows
+// only IPv6.
 func (sa *ikeSA) wantsIPv6PDN() bool {
-	return sa.cpWantsIP6 && !sa.cpWantsIP
+	v4, v6, _ := sa.pdnFamilies()
+	return v6 && !v4
 }
 
 // wantsIPv4v6PDN reports whether the PDN connection is set up as IPv4v6: the
@@ -39,7 +42,8 @@ func (sa *ikeSA) wantsIPv6PDN() bool {
 // §7.4.1) and ikev2.ipv4v6 is enabled. Otherwise such a request is answered
 // with IPv4 and PDN_TYPE_IPv4_ONLY_ALLOWED.
 func (s *Server) wantsIPv4v6PDN(sa *ikeSA) bool {
-	return sa.cpWantsIP && sa.cpWantsIP6 && s.fullCfg != nil && s.fullCfg.IKEv2.IPv4v6
+	v4, v6, _ := sa.pdnFamilies()
+	return v4 && v6 && s.fullCfg != nil && s.fullCfg.IKEv2.IPv4v6
 }
 
 // sessionPAAs returns the PAA of the session's PDN connection and, for an

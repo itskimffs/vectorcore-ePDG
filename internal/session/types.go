@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context; IPv6 address of an IPv4v6 PDN connection.
+// Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context; IPv6 address of an IPv4v6 PDN connection;
+// subscribed PDN type from SWm.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -149,6 +150,9 @@ type APNProfile struct {
 	APN          string
 	AMBRUplink   uint64
 	AMBRDownlink uint64
+	// Subscribed PDN type (TS 29.272 §7.3.62), when the APN-Configuration had one.
+	PDNType        uint8
+	PDNTypePresent bool
 }
 
 type S2BContext struct {
