@@ -68,3 +68,8 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   releases the PDN connection and its user plane session), SWm STR; in parallel, bounded by
   shutdown.timeout_seconds (cmd/epdg/main.go, internal/ikev2/shutdown.go, internal/config/config.go,
   config/epdg.yaml, README.md and tests)
+- IKE SA Delete when the PGW releases the PDN connection (Delete Session Request, or Delete Bearer
+  Request for the default bearer outside handover): the UE gets an INFORMATIONAL request with a
+  Delete payload for the IKE SA (TS 24.302 7.4.3.1), the CHILD SA is removed from XFRM and, for the
+  default bearer, the SWm session is ended with STR (cmd/epdg/main.go, internal/ikev2/shutdown.go
+  and tests)

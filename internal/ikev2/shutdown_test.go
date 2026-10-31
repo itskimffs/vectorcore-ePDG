@@ -71,3 +71,35 @@ func TestReleaseAllSessionsSkipsSADeletedConcurrently(t *testing.T) {
 		t.Fatalf("no SAs: %d", n)
 	}
 }
+
+func TestReleaseSessionByNetworkSendsIKEDelete(t *testing.T) {
+	r := newDPDTestRig(t)
+	r.sa.sessionID = "sess-1"
+	r.sa.ourMsgID = 3
+
+	if r.srv.ReleaseSessionByNetwork("other", true, "test") {
+		t.Fatal("released an SA for an unknown session")
+	}
+	if !r.srv.ReleaseSessionByNetwork("sess-1", true, "test") {
+		t.Fatal("ReleaseSessionByNetwork() = false, want true")
+	}
+	pkt := r.ueRecv(t)
+	k := r.sa.saKey
+	next, plain, err := decryptSK(&ikeSAKey{encr: k.encr, integ: k.integ, SK_ei: k.SK_er, SK_ai: k.SK_ar}, pkt)
+	if err != nil || next != uint8(message.TypeD) || binary.BigEndian.Uint32(pkt[20:24]) != 3 {
+		t.Fatalf("Delete to UE: next %d msg id %d err %v", next, binary.BigEndian.Uint32(pkt[20:24]), err)
+	}
+	var payloads message.IKEPayloadContainer
+	if err := payloads.Decode(next, plain); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := payloads[0].(*message.Delete); !ok || d.ProtocolID != protocolIDIKE {
+		t.Fatalf("payload %+v, want IKE SA Delete", payloads[0])
+	}
+	if r.srv.lookupSA(r.sa.spiI) != nil {
+		t.Fatal("SA left after release")
+	}
+	if r.srv.ReleaseSessionByNetwork("sess-1", true, "test") {
+		t.Fatal("second release reported true")
+	}
+}
