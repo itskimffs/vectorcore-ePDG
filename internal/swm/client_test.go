@@ -1,3 +1,4 @@
+// Modified by itskimffs (2026-10), see NOTICE: PDN-Type parse test (TS 29.272 §7.3.62).
 package swm
 
 import (
@@ -213,5 +214,23 @@ func TestExchangeEAPRequiresNAI(t *testing.T) {
 	_, err := c.ExchangeEAP(context.Background(), EAPRequest{APN: "internet", EAPPayload: []byte{1, 1, 0, 4}})
 	if err == nil || !strings.Contains(err.Error(), "NAI") {
 		t.Fatalf("ExchangeEAP() with empty NAI: err = %v, want error mentioning NAI", err)
+	}
+}
+
+// Added by itskimffs (2026-10), see NOTICE: PDN-Type in APN-Configuration.
+func TestParseAPNProfilePDNType(t *testing.T) {
+	apnCfg := diameter.GroupedAVP(diameter.AVPAPNConfiguration, diameter.Vendor3GPP,
+		diameter.UTF8AVP(diameter.AVPServiceSelection, 0, "ims"),
+		diameter.Uint32AVP(diameter.AVPPDNType, diameter.Vendor3GPP, 2),
+	)
+	profile := parseAPNProfile([]diameter.AVP{apnCfg}, "ims")
+	if profile == nil || !profile.PDNTypePresent || profile.PDNType != 2 {
+		t.Fatalf("profile = %#v", profile)
+	}
+	apnCfg = diameter.GroupedAVP(diameter.AVPAPNConfiguration, diameter.Vendor3GPP,
+		diameter.UTF8AVP(diameter.AVPServiceSelection, 0, "ims"),
+	)
+	if p := parseAPNProfile([]diameter.AVP{apnCfg}, "ims"); p != nil && p.PDNTypePresent {
+		t.Fatalf("PDN type present without the AVP: %#v", p)
 	}
 }

@@ -1,7 +1,7 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
 // PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1); IPv6 PDN connections (CFG_REPLY, TS);
 // the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23); IPv4v6 PDN connections.
-// Default bearer QCI in the S2b context (Prometheus metrics).
+// Default bearer QCI in the S2b context (Prometheus metrics). Subscribed PDN type from SWm (TS 24.302 §7.4.1).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -442,11 +442,13 @@ func (s *Server) handleAuthEAP(conn *net.UDPConn, remote *net.UDPAddr, sa *ikeSA
 				if result.PermanentIdentity != "" {
 					sess.IMSI = result.PermanentIdentity
 				}
-				if result.APNProfile != nil && result.APNProfile.AMBRPresent {
+				if p := result.APNProfile; p != nil && (p.AMBRPresent || p.PDNTypePresent) {
 					sess.APNProfile = &session.APNProfile{
-						APN:          result.APNProfile.APN,
-						AMBRUplink:   uint64(result.APNProfile.AMBRUplink),
-						AMBRDownlink: uint64(result.APNProfile.AMBRDownlink),
+						APN:            p.APN,
+						AMBRUplink:     uint64(p.AMBRUplink),
+						AMBRDownlink:   uint64(p.AMBRDownlink),
+						PDNType:        uint8(p.PDNType),
+						PDNTypePresent: p.PDNTypePresent,
 					}
 				}
 				_ = sess.Transition(session.StateEAPAuthenticated)
@@ -521,9 +523,20 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 				if sess.APNProfile != nil {
 					ambrUL = sess.APNProfile.AMBRUplink
 					ambrDL = sess.APNProfile.AMBRDownlink
+					sa.subPDNType, sa.subPDNTypePresent = sess.APNProfile.PDNType, sess.APNProfile.PDNTypePresent
 				}
 				sess.RUnlock()
 			}
+		}
+
+		// The PDN type is the UE's request restricted by the subscription; with
+		// nothing in common the PDN connection is rejected (TS 24.302 §7.4.1.2).
+		if _, _, ok := sa.pdnFamilies(); !ok {
+			s.log.Warn("IKE_AUTH final: requested PDN type not allowed by the subscription, PDN_CONNECTION_REJECTION",
+				"imsi", sa.imsi, "apn", sa.apn, "ue_ipv4", sa.cpWantsIP, "ue_ipv6", sa.cpWantsIP6,
+				"subscribed_pdn_type", subscribedPDNTypeName(sa.subPDNType))
+			s.sendAuthNotify(conn, remote, sa, hdr.MessageID, notifyPDNConnectionRejection, natt)
+			return
 		}
 
 		// Resolve PGW-C address per 3GPP TS 29.303 (DNS) or static config.
