@@ -2,6 +2,7 @@
 // PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1); IPv6 PDN connections (CFG_REPLY, TS);
 // the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23); IPv4v6 PDN connections.
 // Default bearer QCI in the S2b context (Prometheus metrics). Subscribed PDN type from SWm (TS 24.302 §7.4.1).
+// PGW Restart Counter presence in the S2b context.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -594,17 +595,18 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 				sess.Lock()
 				_ = sess.Transition(session.StateS2BCreateSessionSent)
 				sess.S2B = &session.S2BContext{
-					PAA:              paa.String(),
-					PAA6:             ipString(paa6),
-					PGWControlTEID:   r.PGWControlTEID,
-					PGWControlIP:     r.PGWControlIP,
-					PGWUserTEID:      r.PGWUserTEID,
-					PGWUserIP:        r.PGWUserIP,
-					LocalControlTEID: r.LocalControlTEID,
-					LocalUserTEID:    r.LocalUserTEID,
-					EBI:              r.EBI,
-					QCI:              r.QCI,
-					PGWRecovery:      r.PGWRecovery,
+					PAA:                paa.String(),
+					PAA6:               ipString(paa6),
+					PGWControlTEID:     r.PGWControlTEID,
+					PGWControlIP:       r.PGWControlIP,
+					PGWUserTEID:        r.PGWUserTEID,
+					PGWUserIP:          r.PGWUserIP,
+					LocalControlTEID:   r.LocalControlTEID,
+					LocalUserTEID:      r.LocalUserTEID,
+					EBI:                r.EBI,
+					QCI:                r.QCI,
+					PGWRecovery:        r.PGWRecovery,
+					PGWRecoveryPresent: r.PGWRecoveryPresent,
 				}
 				_ = sess.Transition(session.StateS2BAccepted)
 				sess.Unlock()

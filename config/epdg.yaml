@@ -61,6 +61,10 @@ gtp:
   validate_outer_peer: true
   strict_peer_check: true
   max_sequence: 8388607  # Cisco StarOS qvpc-si: rejects bit-23 sequences (StarOS defect).
+  # Echo Request to each PGW with sessions every echo_interval_seconds (min 60, TS 23.007 §20.1).
+  # A changed Restart Counter means the PGW restarted: its PDN connections are released and the
+  # UEs get IKE Delete (TS 23.007 §17B.1A.1). 0 disables.
+  echo_interval_seconds: 60
 
 pgw_discovery:
   # dns_enabled: false enables per-attach PGW discovery via DNS S-NAPTR (3GPP TS 29.303).

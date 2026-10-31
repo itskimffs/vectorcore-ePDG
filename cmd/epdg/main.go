@@ -1,4 +1,5 @@
-// Modified by itskimffs (2026-10), see NOTICE: release all sessions on shutdown; IKE SA Delete when the PGW releases the PDN connection.
+// Modified by itskimffs (2026-10), see NOTICE: release all sessions on shutdown; IKE SA Delete when the PGW releases the PDN connection;
+// PGW restart detection (GTPv2-C Echo, Restart Counter).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -162,6 +163,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.GTP.EchoIntervalSeconds > 0 {
+		monitor := newPGWMonitor(time.Duration(cfg.GTP.EchoIntervalSeconds)*time.Second, s2bClient.EchoTo, manager.Snapshot,
+			func(ctx context.Context, sess *session.Session) {
+				sess.RLock()
+				imsi, swmSessionID := sess.IMSI, sess.SWMSessionID
+				sess.RUnlock()
+				log.Info("PGW restart: releasing PDN connection", "session_id", sess.ID, "imsi", imsi)
+				releaseByNetwork(ctx, sess, swmSessionID, manager, gtpuManager, s2bClient, swmClient, log.Logger, releaseIKE, false, "pgw_restart", "pgw_restart")
+			}, log.Logger)
+		go monitor.run(ctx)
+	}
+
 	var apiSrv *api.Server
 	if cfg.API.Enabled {
 		apiSrv = api.NewServer(cfg.API, manager, gtpuManager, api.BuildInfo{
@@ -247,23 +260,30 @@ func handlePGWDelete(ctx context.Context, manager *session.Manager, gtpuManager 
 	sess.RUnlock()
 
 	log.Info("PGW Delete Session", "session_id", sess.ID, "imsi", imsi, "is_handover", event.IsHandover)
+	releaseByNetwork(ctx, sess, swmSessionID, manager, gtpuManager, s2bClient, swmClient, log, releaseIKE, event.IsHandover, "pgw_delete_session", "pgw_deleted")
+}
+
+// releaseByNetwork removes a PDN connection the PGW no longer has (it released
+// it, or it restarted): IKE Delete to the UE and the CHILD SA out of XFRM, the
+// GTP-U session, no S2b Delete Session back to the PGW, SWm STR.
+func releaseByNetwork(ctx context.Context, sess *session.Session, swmSessionID string, manager *session.Manager, gtpuManager *gtpu.Manager, s2bClient *s2b.Client, swmClient *swm.Client, log *slog.Logger, releaseIKE releaseIKEFunc, isHandover bool, ikeReason, cleanupReason string) {
 	// The UE is told first (its IKE SA's traffic selectors need the session);
 	// the STR is sent below.
 	if releaseIKE != nil {
-		releaseIKE(sess.ID, false, "pgw_delete_session")
+		releaseIKE(sess.ID, false, ikeReason)
 	}
-	cleanupSession(sess, gtpuManager, s2bClient, log, "pgw_deleted", false)
+	cleanupSession(sess, gtpuManager, s2bClient, log, cleanupReason, false)
 	if swmClient != nil && swmSessionID != "" {
 		strCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		var err error
-		if event.IsHandover {
+		if isHandover {
 			err = swmClient.TerminateSessionHandover(strCtx, swmSessionID)
 		} else {
 			err = swmClient.TerminateSession(strCtx, swmSessionID)
 		}
 		cancel()
 		if err != nil {
-			log.Warn("PGW Delete: SWm STR failed", "err", err, "session_id", sess.ID)
+			log.Warn("network release: SWm STR failed", "err", err, "session_id", sess.ID, "reason", ikeReason)
 		}
 	}
 	manager.Delete(sess.ID)

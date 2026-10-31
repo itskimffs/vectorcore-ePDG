@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6); IPv4v6 PDN connections.
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6); IPv4v6 PDN connections; Recovery IE presence.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -441,11 +441,18 @@ func parseCause(ies []ie) uint8 {
 }
 
 func parseRecovery(ies []ie) uint8 {
+	r, _ := parseRecoveryPresent(ies)
+	return r
+}
+
+// parseRecoveryPresent returns the Restart Counter of the Recovery IE
+// (TS 29.274 §8.5) and whether the IE was present.
+func parseRecoveryPresent(ies []ie) (uint8, bool) {
 	rec, ok := findIE(ies, ieRecovery, 0)
 	if !ok || len(rec.Payload) == 0 {
-		return 0
+		return 0, false
 	}
-	return rec.Payload[0]
+	return rec.Payload[0], true
 }
 
 func parsePAA(ies []ie) net.IP {

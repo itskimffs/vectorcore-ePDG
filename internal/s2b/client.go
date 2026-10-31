@@ -1,5 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6); IPv4v6 PDN connections.
-// Default bearer QCI from the Create Session Response (Prometheus metrics).
+// Default bearer QCI from the Create Session Response (Prometheus metrics). EchoTo for PGW restart detection.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -45,12 +45,14 @@ type CreateSessionResult struct {
 	EBI              uint8
 	QCI              uint8 // default bearer QCI: Bearer Level QoS in the response, else the requested QCI
 	PGWRecovery      uint8
-	PGWControlIP     net.IP
-	PGWUserIP        net.IP
-	RequestPCO       *pco.PCO
-	ResponsePCO      *pco.Decoded
-	RequestAPCO      *pco.PCO
-	ResponseAPCO     *pco.Decoded
+	// PGWRecoveryPresent: the Create Session Response had a Recovery IE.
+	PGWRecoveryPresent bool
+	PGWControlIP       net.IP
+	PGWUserIP          net.IP
+	RequestPCO         *pco.PCO
+	ResponsePCO        *pco.Decoded
+	RequestAPCO        *pco.PCO
+	ResponseAPCO       *pco.Decoded
 }
 
 type DeleteSessionEvent struct {
@@ -422,6 +424,38 @@ func (c *Client) Echo(ctx context.Context) (uint8, error) {
 	return parseRecovery(ies), nil
 }
 
+// EchoTo sends an Echo Request to the PGW at pgwControlIP (the static
+// pgw_gtpc peer when nil) and returns the Restart Counter from the Echo
+// Response (TS 29.274 §7.1.2) and whether the Recovery IE was present.
+// It returns an error when the PGW does not answer within T3/N3.
+func (c *Client) EchoTo(ctx context.Context, pgwControlIP net.IP) (uint8, bool, error) {
+	resp, err := c.transactionTo(ctx, message{
+		Type:     msgEchoRequest,
+		Sequence: c.seq.next(),
+		Payload:  recoveryIE(0).encode(),
+	}, msgEchoResponse, c.pgwPeer(pgwControlIP))
+	if err != nil {
+		return 0, false, err
+	}
+	ies, err := decodeIEs(resp.Payload)
+	if err != nil {
+		return 0, false, err
+	}
+	r, ok := parseRecoveryPresent(ies)
+	return r, ok, nil
+}
+
+// pgwPeer is the GTPv2-C address for a PGW control-plane IP learned from the
+// Create Session Response F-TEID; the static pgw_gtpc peer when nil or not IPv4.
+func (c *Client) pgwPeer(pgwControlIP net.IP) *net.UDPAddr {
+	if pgwControlIP != nil {
+		if ip4 := pgwControlIP.To4(); ip4 != nil {
+			return &net.UDPAddr{IP: ip4, Port: defaultGTPControlPort}
+		}
+	}
+	return c.peer
+}
+
 // DeleteSession sends a GTPv2-C Delete Session Request to the PGW.
 // pgwControlIP is the PGW GTPv2-C control-plane address learned from the Create Session Response
 // F-TEID IE; when nil, the static pgw_gtpc config address is used.
@@ -434,12 +468,7 @@ func (c *Client) DeleteSession(ctx context.Context, pgwControlIP net.IP, pgwCont
 		c.mu.Unlock()
 	}()
 
-	peer := c.peer
-	if pgwControlIP != nil {
-		if ip4 := pgwControlIP.To4(); ip4 != nil {
-			peer = &net.UDPAddr{IP: ip4, Port: defaultGTPControlPort}
-		}
-	}
+	peer := c.pgwPeer(pgwControlIP)
 	fteidTEID := localControlTEID
 	if fteidTEID == 0 {
 		fteidTEID = localUserTEID
@@ -541,12 +570,13 @@ func (c *Client) parseCreateSessionResponseFor(resp message, localControl, local
 		return nil, fmt.Errorf("S2b Create Session rejected cause=%d", cause)
 	}
 	result := &CreateSessionResult{
-		PAA:              parsePAA(ies),
-		LocalControlTEID: localControl,
-		LocalUserTEID:    localUser,
-		EBI:              defaultEBI,
-		PGWRecovery:      parseRecovery(ies),
-		PGWControlIP:     net.ParseIP(c.cfg.GTP.PGWGTPC),
+		PAA:                parsePAA(ies),
+		LocalControlTEID:   localControl,
+		LocalUserTEID:      localUser,
+		EBI:                defaultEBI,
+		PGWRecovery:        parseRecovery(ies),
+		PGWRecoveryPresent: func() bool { _, ok := parseRecoveryPresent(ies); return ok }(),
+		PGWControlIP:       net.ParseIP(c.cfg.GTP.PGWGTPC),
 	}
 	result.RequestPCO, result.RequestAPCO = c.requestPCO()
 	if result.ResponsePCO, err = c.parsePCOIE(ies, iePCO); err != nil {
