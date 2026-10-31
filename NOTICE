@@ -62,3 +62,9 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   internal/session/manager.go, internal/api/models.go, internal/api/clients.go,
   internal/api/sessions.go, internal/config/config.go, config/epdg.yaml, docs/API.md and tests)
 - Fork notice at the top of README.md
+- Release all sessions on shutdown (shutdown.release_sessions, default on): on SIGTERM/SIGINT every
+  IKE SA is torn down before the S2b and SWm clients stop: an INFORMATIONAL request with a Delete
+  payload for the IKE SA to the UE (RFC 7296 1.4.1, 3.11), S2b Delete Session Request (so the PGW
+  releases the PDN connection and its user plane session), SWm STR; in parallel, bounded by
+  shutdown.timeout_seconds (cmd/epdg/main.go, internal/ikev2/shutdown.go, internal/config/config.go,
+  config/epdg.yaml, README.md and tests)

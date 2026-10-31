@@ -90,3 +90,4 @@ pco:
 
 shutdown:
   timeout_seconds: 5
+  release_sessions: true   # IKE Delete to the UEs, S2b Delete Session and SWm STR for every session before stopping

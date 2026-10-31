@@ -15,11 +15,14 @@
 > - Datapath: per-UE XFRM reqid, inner IPv6 and IPv4v6 in the XDP/TC programs,
 >   uplink TFT for IPv6 and TFT component types per TS 24.008 Table 10.5.162
 > - Operations: Prometheus metrics on `/metrics` by PDN type and QCI
+> - Shutdown: every session is released before the ePDG stops (IKE SA Delete to
+>   the UE, S2b Delete Session, SWm STR)
 >
 > Every modified file carries a notice, and [NOTICE](NOTICE) lists all changes.
 > The changes are tested in that lab with a small set of handsets, not in
 > production. The upstream description below is kept, except the dual-stack SWu
-> line, which upstream ends with "the inner PDN connection remains IPv4-only".
+> line, which upstream ends with "the inner PDN connection remains IPv4-only", and
+> the configuration keys the fork adds (marked "(fork)").
 
 VectorCore ePDG is a production-grade Evolved Packet Data Gateway written in Go. It implements the full VoWiFi control plane and BPF datapath as a single self-contained binary. 
 
@@ -265,6 +268,7 @@ The config file uses a simple `section: / key: value` format. An annotated examp
 | `half_open_sa_timeout` | `30` | | Seconds an unauthenticated IKE SA (IKE_SA_INIT done, IKE_AUTH not yet complete) may exist before expiry |
 | `max_half_open_sas` | `4096` | | Hard cap on unauthenticated IKE SAs tracked at once; new IKE_SA_INIT requests are rejected at/above this |
 | `cookie_threshold` | `2048` | | Half-open SA count at/above which the RFC 7296 §2.6 COOKIE challenge is required for new IKE_SA_INIT requests |
+| `ipv4v6` | `true` | | (fork) IPv4v6 PDN connection in one CHILD SA when the UE asks for both INTERNAL_IP4_ADDRESS and INTERNAL_IP6_ADDRESS; `false` gives IPv4 and PDN_TYPE_IPv4_ONLY_ALLOWED |
 
 ### `swm` — SWm Diameter (EAP-AKA proxy)
 
@@ -338,6 +342,7 @@ unless the corresponding flag is set.
 | Key | Default | Description |
 |---|---|---|
 | `timeout_seconds` | `5` | Per-component shutdown timeout in seconds |
+| `release_sessions` | `true` | (fork) Before stopping, release every session within `timeout_seconds`: IKE SA Delete to the UE, S2b Delete Session, SWm STR |
 
 ### `bpf` — BPF dataplane
 
