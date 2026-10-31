@@ -11,12 +11,16 @@
 >   unknown IKE SAs (RFC 7296)
 > - PDN connections: IPv6 and IPv4v6 PDN connections (one CHILD SA for both
 >   families), PDN_TYPE_IPv4_ONLY_ALLOWED / PDN_TYPE_IPv6_ONLY_ALLOWED
->   (TS 24.302 §7.4.1)
+>   (TS 24.302 §7.4.1), and the PDN type limited by the subscribed PDN-Type from
+>   SWm (downgrade, or PDN_CONNECTION_REJECTION; TS 24.302 §7.4.1.1/§7.4.1.2)
 > - Datapath: per-UE XFRM reqid, inner IPv6 and IPv4v6 in the XDP/TC programs,
 >   uplink TFT for IPv6 and TFT component types per TS 24.008 Table 10.5.162
 > - Operations: Prometheus metrics on `/metrics` by PDN type and QCI
 > - Shutdown: every session is released before the ePDG stops (IKE SA Delete to
 >   the UE, S2b Delete Session, SWm STR)
+> - PGW events: IKE SA Delete to the UE when the PGW releases the PDN connection
+>   (TS 24.302 §7.4.3.1), and when a GTPv2-C Echo shows that the PGW restarted
+>   (Restart Counter, TS 23.007 §17B.1A.1)
 >
 > Every modified file carries a notice, and [NOTICE](NOTICE) lists all changes.
 > The changes are tested in that lab with a small set of handsets, not in
