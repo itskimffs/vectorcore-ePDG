@@ -1,5 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: default bearer QCI in the S2b context; IPv6 address of an IPv4v6 PDN connection;
-// subscribed PDN type from SWm.
+// subscribed PDN type from SWm; PGW Restart Counter presence.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -167,6 +167,8 @@ type S2BContext struct {
 	EBI              uint8
 	QCI              uint8 // default bearer QCI
 	PGWRecovery      uint8
+	// PGWRecoveryPresent: the Create Session Response had a Recovery IE (PGWRecovery is valid).
+	PGWRecoveryPresent bool
 }
 
 type DatapathContext struct {

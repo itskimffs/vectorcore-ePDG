@@ -297,6 +297,7 @@ The config file uses a simple `section: / key: value` format. An annotated examp
 | `validate_outer_peer` | | Validate GTP-U outer peer IP against PGW (default `true`) |
 | `strict_peer_check` | | Drop packets from unexpected peers (default `true`) |
 | `max_sequence` | | GTPv2-C sequence cap. Set `8388607` for Cisco StarOS (StarOS defect: rejects sequences with bit 23 set) |
+| `echo_interval_seconds` | `60` | (fork) GTPv2-C Echo Request to each PGW with sessions (minimum 60, TS 23.007 §20.1). A Restart Counter that differs from the one the sessions were set up with means the PGW restarted: its PDN connections are released, the UEs get IKE Delete and SWm STR is sent (TS 23.007 §17B.1A.1). `0` disables |
 
 ### `pgw_discovery` — DNS-based PGW discovery (3GPP TS 29.303)
 

@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label; ikev2.ipv4v6; shutdown.release_sessions.
+// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label; ikev2.ipv4v6; shutdown.release_sessions; gtp.echo_interval_seconds.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -135,6 +135,11 @@ type GTPConfig struct {
 	// Set to 8388607 (0x7FFFFF) for Cisco StarOS qvpc-si interop — StarOS
 	// incorrectly rejects sequences with the 23rd bit set.
 	MaxSequence uint32
+	// EchoIntervalSeconds: GTPv2-C Echo Request interval per PGW with sessions,
+	// to detect a PGW restart from the Restart Counter (TS 23.007 §17B.1A.1,
+	// §18). Not more often than every 60 s per path (TS 23.007 §20.1); values
+	// below 60 are raised to 60. 0 disables the echo.
+	EchoIntervalSeconds int
 }
 
 type BPFConfig struct {
@@ -318,6 +323,8 @@ func setValue(cfg *Config, section, key, value string) error {
 			return setBool(value, &cfg.GTP.StrictPeerCheck, section, key)
 		case "max_sequence":
 			return setUint32(value, &cfg.GTP.MaxSequence, section, key)
+		case "echo_interval_seconds":
+			return setInt(value, &cfg.GTP.EchoIntervalSeconds, section, key)
 		}
 	case "apn":
 		switch key {
@@ -404,10 +411,11 @@ func Default() *Config {
 			WatchdogTimeoutSeconds:  10,
 		},
 		GTP: GTPConfig{
-			LocalPort:         GTPUPort,
-			MTU:               1400,
-			ValidateOuterPeer: true,
-			StrictPeerCheck:   true,
+			LocalPort:           GTPUPort,
+			MTU:                 1400,
+			ValidateOuterPeer:   true,
+			StrictPeerCheck:     true,
+			EchoIntervalSeconds: 60,
 			BPF: BPFConfig{
 				XDPAttachMode: "generic",
 				MapMaxEntries: 4096,

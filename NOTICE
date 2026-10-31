@@ -81,3 +81,11 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   7.4.1.2); without PDN-Type the UE's request is used (internal/diameter/message.go,
   internal/swm/client.go, internal/session/types.go, internal/ikev2/auth.go,
   internal/ikev2/sa.go, internal/ikev2/paa6.go, internal/ikev2/pdntype.go and tests)
+- PGW restart detection (gtp.echo_interval_seconds, default 60, minimum 60 per TS 23.007 20.1):
+  a GTPv2-C Echo Request to each PGW with sessions; a Restart Counter in the Echo Response that
+  differs from the one in the sessions' Create Session Response (or, without one there, from the
+  previous Echo Response) means the PGW restarted: the ePDG removes those PDN connections, sends
+  IKE Delete to the UEs and SWm STR (TS 23.007 17B.1A.1, 18); a path failure alone releases
+  nothing (cmd/epdg/pgwmonitor.go, cmd/epdg/main.go, internal/s2b/client.go,
+  internal/s2b/codec.go, internal/session/types.go, internal/ikev2/auth.go,
+  internal/config/config.go, config/epdg.yaml, README.md and tests)
