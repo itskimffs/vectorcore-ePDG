@@ -18,7 +18,8 @@
 >
 > Every modified file carries a notice, and [NOTICE](NOTICE) lists all changes.
 > The changes are tested in that lab with a small set of handsets, not in
-> production. The upstream description below is kept as it was.
+> production. The upstream description below is kept, except the dual-stack SWu
+> line, which upstream ends with "the inner PDN connection remains IPv4-only".
 
 VectorCore ePDG is a production-grade Evolved Packet Data Gateway written in Go. It implements the full VoWiFi control plane and BPF datapath as a single self-contained binary. 
 
@@ -56,7 +57,7 @@ VectorCore ePDG
 - **Bidirectional VoWiFi ↔ VoLTE handover** — VoWiFi→VoLTE: detects PGW Cause=10 (Access changed from Non-3GPP to 3GPP) on Delete Bearer and sends SWm STR with Termination-Cause=8 (DIAMETER_USER_MOVED) for clean AAA handover. VoLTE→VoWiFi: detects non-zero INTERNAL_IP4_ADDRESS in IKE_AUTH CFG_REQUEST and sets the Handover Indication (HI) bit in the S2b Create Session Indication IE so the PGW preserves the existing PDN connection and assigns the same IP address
 - **Lifecycle management** — IKE SA delete, CHILD SA delete, DPD, PGW-initiated delete; full teardown of XFRM + GTP-U + S2b state
 - **Reauthentication** — A new IKE_AUTH from an already-attached IMSI+APN (without a handover indication) is treated as an implicit detach of the existing session followed by a fresh PDN attach, per 3GPP TS 23.402
-- **Dual-stack SWu (IPv4 + IPv6 outer tunnel)** — IKEv2 and IPsec/ESP over IPv6 transport in addition to IPv4, opt-in via `ikev2.listen_addr_v6` (3GPP TS 24.302 §7.2.2); the inner PDN connection (PAA, S2b, GTP-U) remains IPv4-only
+- **Dual-stack SWu (IPv4 + IPv6 outer tunnel)** — IKEv2 and IPsec/ESP over IPv6 transport in addition to IPv4, opt-in via `ikev2.listen_addr_v6` (3GPP TS 24.302 §7.2.2); upstream keeps the inner PDN connection (PAA, S2b, GTP-U) IPv4-only, this fork adds IPv6 and IPv4v6 PDN connections (see the notice above)
 - **Read-only administrative API** — Huma-based HTTP API (`/api/v1`) for connected subscribers, IKE/IPsec/S2b session detail, and BPF dataplane statistics; OpenAPI spec and an interactive docs UI (Stoplight Elements) at `/docs`. Disabled by default; see [docs/API.md](docs/API.md)
 - **3GPP compliant** — Implements TS 23.402, TS 24.302, TS 29.273, TS 29.274, TS 29.303, TS 33.402
 
