@@ -44,3 +44,7 @@ Modifications in this fork (itskimffs, 2026-10); each modified file carries a no
   internal/api/server.go, internal/gtpu/metrics.go, internal/gtpu/dataplane.go,
   internal/s2b/client.go, internal/session/types.go, internal/ikev2/auth.go,
   internal/config/config.go, config/epdg.yaml, docs/API.md and tests)
+- INVALID_IKE_SPI: an IKE request (other than IKE_SA_INIT) for an IKE SA this node does not know is
+  answered with an unprotected response containing N(INVALID_IKE_SPI), with the IKE SPIs, Message ID
+  and exchange type copied and rate limited; responses for unknown IKE SAs are not answered
+  (RFC 7296 1.5, 2.21.4) (internal/ikev2/invalid_spi.go, internal/ikev2/server.go and tests)
