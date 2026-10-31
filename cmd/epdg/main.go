@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: release all sessions on shutdown.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package main
 
 import (
@@ -85,10 +89,13 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	// The signal only stops the main wait; ctx is cancelled after the sessions
+	// are released, because that still needs the S2b and SWm clients.
+	stopCh := make(chan struct{})
 	go func() {
 		sig := <-sigCh
 		log.Info("VectorCore ePDG shutdown requested", "signal", sig.String())
-		cancel()
+		close(stopCh)
 	}()
 
 	// Flush stale XFRM state from any previous run before installing new SAs.
@@ -166,10 +173,18 @@ func main() {
 		"s2b_pgw", cfg.GTP.PGWGTPC,
 	)
 
-	<-ctx.Done()
+	<-stopCh
 
 	shutdownTimeout := time.Duration(cfg.Shutdown.TimeoutSeconds) * time.Second
 	log.Info("VectorCore ePDG shutdown", "timeout", shutdownTimeout)
+
+	// Release every session while the IKE sockets and the S2b/SWm clients
+	// still run: IKE Delete to the UE, S2b Delete Session (the PGW/SMF then
+	// releases the PDN connection and its UPF session), SWm STR.
+	if cfg.Shutdown.ReleaseSessions {
+		ikeSrv.ReleaseAllSessions(shutdownTimeout)
+	}
+	cancel()
 
 	ikeSrv.Close()
 

@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label; ikev2.ipv4v6.
+// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label; ikev2.ipv4v6; shutdown.release_sessions.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -159,6 +159,11 @@ type PCOConfig struct {
 
 type ShutdownConfig struct {
 	TimeoutSeconds int
+	// ReleaseSessions releases every session before the ePDG stops: IKE SA
+	// Delete to the UE, S2b Delete Session, SWm STR. Without it the PGW keeps
+	// the PDN connections and the UEs keep their tunnels until they notice.
+	// Default true.
+	ReleaseSessions bool
 }
 
 func Load(path string) (*Config, error) {
@@ -349,6 +354,8 @@ func setValue(cfg *Config, section, key, value string) error {
 		switch key {
 		case "timeout_seconds":
 			return setInt(value, &cfg.Shutdown.TimeoutSeconds, section, key)
+		case "release_sessions":
+			return setBool(value, &cfg.Shutdown.ReleaseSessions, section, key)
 		}
 	case "pgw_discovery":
 		switch key {
@@ -410,7 +417,8 @@ func Default() *Config {
 			Enabled: true,
 		},
 		Shutdown: ShutdownConfig{
-			TimeoutSeconds: 5,
+			TimeoutSeconds:  5,
+			ReleaseSessions: true,
 		},
 		API: APIConfig{
 			Enabled:       false,
