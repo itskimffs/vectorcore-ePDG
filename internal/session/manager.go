@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: FindByPAA also matches the IPv6 address of an IPv4v6 PDN connection.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package session
 
 import "sync"
@@ -50,7 +54,7 @@ func (m *Manager) FindByPAA(paa string) *Session {
 		return nil
 	}
 	for _, sess := range m.sessions {
-		if sess.S2B != nil && sess.S2B.PAA == paa {
+		if sess.S2B != nil && (sess.S2B.PAA == paa || sess.S2B.PAA6 == paa) {
 			return sess
 		}
 	}

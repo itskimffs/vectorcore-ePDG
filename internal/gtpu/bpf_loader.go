@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix).
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix); IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -117,20 +117,17 @@ func newBPFDataplane(iface string, localGTPUIP net.IP, mode string, maxEntries i
 // from when outer-peer validation is enabled (TS 29.281 §4.3.0; finding #8).
 //
 // For an IPv6 PDN connection paa is the UE's IPv6 address; its /64 prefix is
-// stored and inner IPv6 destinations are checked against it.
-func (d *BPFDataplane) AddTEID(teid uint32, paa, pgwAddr net.IP) error {
+// stored and inner IPv6 destinations are checked against it. For an IPv4v6
+// PDN connection paa is the IPv4 address and paa6 the IPv6 address, and inner
+// packets of both families are accepted (is_v6 = teidFamilyIPv4v6).
+func (d *BPFDataplane) AddTEID(teid uint32, paa, paa6, pgwAddr net.IP) error {
 	pgw4 := pgwAddr.To4()
 	if pgw4 == nil {
 		return fmt.Errorf("bpf: PGW address must be IPv4, got %s", pgwAddr)
 	}
-	entry := GtpuDecapTeidEntry{}
-	if ip4 := paa.To4(); ip4 != nil {
-		copy(entry.Paa[:], ip4)
-	} else if ip6 := paa.To16(); ip6 != nil {
-		copy(entry.Paa6[:], ip6[:8])
-		entry.IsV6 = 1
-	} else {
-		return fmt.Errorf("bpf: invalid PAA %s", paa)
+	entry, err := teidEntry(paa, paa6)
+	if err != nil {
+		return err
 	}
 	copy(entry.PgwAddr[:], pgw4)
 	if err := d.objs.TeidMap.Put(teid, entry); err != nil {
@@ -254,4 +251,34 @@ func parseXDPMode(mode string) (link.XDPAttachFlags, error) {
 	default:
 		return 0, fmt.Errorf("bpf: unknown XDP mode %q", mode)
 	}
+}
+
+// teid_entry.is_v6: the inner address families accepted for a TEID.
+const (
+	teidFamilyIPv4   = 0
+	teidFamilyIPv6   = 1
+	teidFamilyIPv4v6 = 2
+)
+
+// teidEntry fills the PAA fields of a teid_map entry.
+func teidEntry(paa, paa6 net.IP) (GtpuDecapTeidEntry, error) {
+	entry := GtpuDecapTeidEntry{}
+	if ip4 := paa.To4(); ip4 != nil {
+		copy(entry.Paa[:], ip4)
+		entry.IsV6 = teidFamilyIPv4
+		if paa6 != nil {
+			ip6 := paa6.To16()
+			if ip6 == nil || paa6.To4() != nil {
+				return entry, fmt.Errorf("bpf: invalid IPv6 PAA %s", paa6)
+			}
+			copy(entry.Paa6[:], ip6[:8])
+			entry.IsV6 = teidFamilyIPv4v6
+		}
+	} else if ip6 := paa.To16(); ip6 != nil && paa6 == nil {
+		copy(entry.Paa6[:], ip6[:8])
+		entry.IsV6 = teidFamilyIPv6
+	} else {
+		return entry, fmt.Errorf("bpf: invalid PAA %s / %s", paa, paa6)
+	}
+	return entry, nil
 }

@@ -1,4 +1,4 @@
-// Added by itskimffs (2026-10), see NOTICE: Prometheus metrics per PDN type and QCI.
+// Added by itskimffs (2026-10), see NOTICE: Prometheus metrics per PDN type and QCI; IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -14,8 +14,9 @@ const (
 
 // PDN types as used in metric labels.
 const (
-	PDNTypeIPv4 = "ipv4"
-	PDNTypeIPv6 = "ipv6"
+	PDNTypeIPv4   = "ipv4"
+	PDNTypeIPv6   = "ipv6"
+	PDNTypeIPv4v6 = "ipv4v6"
 )
 
 // TrafficKey groups cumulative user-plane traffic for the metrics endpoint.
@@ -56,6 +57,14 @@ func PDNType(paa net.IP) string {
 	return ""
 }
 
+// sessionPDNType returns the PDN type label of a GTP-U session.
+func sessionPDNType(ds *Session) string {
+	if ds.PAA6 != nil {
+		return PDNTypeIPv4v6
+	}
+	return PDNType(ds.PAA)
+}
+
 // accountLocked adds the growth of a bearer's BPF counter since the last
 // poll to the totals for its APN, PDN type and QCI. A counter that went
 // backwards (BPF entry recreated) counts from zero. Caller holds m.mu.
@@ -76,7 +85,7 @@ func (m *Manager) accountLocked(ds *Session, b *Bearer, direction string, packet
 	if m.trafficTotals == nil {
 		m.trafficTotals = make(map[TrafficKey]*TrafficCounter)
 	}
-	key := TrafficKey{APN: ds.APN, PDNType: PDNType(ds.PAA), QCI: b.QoS.QCI, Direction: direction}
+	key := TrafficKey{APN: ds.APN, PDNType: sessionPDNType(ds), QCI: b.QoS.QCI, Direction: direction}
 	t := m.trafficTotals[key]
 	if t == nil {
 		t = &TrafficCounter{}
@@ -121,7 +130,7 @@ func (m *Manager) Bearers() []BearerInfo {
 	defer m.mu.RUnlock()
 	var out []BearerInfo
 	for _, ds := range m.sessionsByID {
-		pdnType := PDNType(ds.PAA)
+		pdnType := sessionPDNType(ds)
 		for ebi, b := range ds.Bearers {
 			out = append(out, BearerInfo{
 				IMSI:    ds.IMSI,

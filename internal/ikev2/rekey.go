@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: lastSeen only after the message is authenticated (RFC 7296 §2.4); traffic selectors for IPv6 PAAs.
+// Modified by itskimffs (2026-10), see NOTICE: lastSeen only after the message is authenticated (RFC 7296 §2.4); traffic selectors for IPv6 PAAs and IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -299,13 +299,7 @@ func (s *Server) handleChildSARekey(conn *net.UDPConn, remote *net.UDPAddr, sa *
 	}
 
 	// Traffic selectors: PAA from session (same as originally negotiated).
-	var paa net.IP
-	if s.sessions != nil && sa.sessionID != "" {
-		if sess := s.sessions.Get(sa.sessionID); sess != nil && sess.S2B != nil {
-			paa = net.ParseIP(sess.S2B.PAA)
-		}
-	}
-	localTS, remoteTS := paaTrafficSelectors(paa)
+	paa, paa6 := s.sessionPAAs(sa.sessionID)
 
 	// Install new CHILD SA states only — policies already exist from initial negotiation
 	// and don't need to change since the traffic selectors are identical.
@@ -324,10 +318,9 @@ func (s *Server) handleChildSARekey(conn *net.UDPConn, remote *net.UDPAddr, sa *
 		NATT:         natt,
 		NATTSrcPort:  nattPort,
 		NATTDstPort:  remote.Port,
-		LocalTS:      localTS,
-		RemoteTS:     remoteTS,
 		IfID:         xfrm.IfID,
 	}
+	setChildTrafficSelectors(&xfrmParams, paa, paa6)
 	if err2 := xfrm.AddChildSAStates(xfrmParams); err2 != nil {
 		s.log.Error("CREATE_CHILD_SA: XFRM install failed", "err", err2, "imsi", sa.imsi)
 		s.sendChildSANotify(conn, remote, sa, hdr.MessageID, message.INVALID_SYNTAX, natt)

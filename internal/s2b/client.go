@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6).
+// Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (PAA PDN type IPv6); IPv4v6 PDN connections.
 // Default bearer QCI from the Create Session Response (Prometheus metrics).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
@@ -30,11 +30,14 @@ type CreateSessionRequest struct {
 	Handover     bool   // set Indication IE HI bit (VoLTE→VoWiFi handover, TS 29.274 §8.12)
 	PGWControlIP net.IP // overrides the static pgw_gtpc peer when non-nil (DNS discovery)
 	IPv6         bool   // request PDN type IPv6 instead of IPv4 (UE asked only for INTERNAL_IP6_ADDRESS)
+	IPv4v6       bool   // request PDN type IPv4v6 (UE asked for INTERNAL_IP4_ADDRESS and INTERNAL_IP6_ADDRESS)
 }
 
 type CreateSessionResult struct {
 	PAA              net.IP // IPv4 address, or the IPv6 address (prefix + interface identifier) for PDN type IPv6
+	PAA6             net.IP // IPv6 address for PDN type IPv4v6 (PAA is then the IPv4 address); nil otherwise
 	PAAPrefixLen     uint8  // IPv6 prefix length; 0 for IPv4
+	PDNType          uint8  // PDN type assigned by the PGW (1 IPv4, 2 IPv6, 3 IPv4v6)
 	PGWControlTEID   uint32
 	PGWUserTEID      uint32
 	LocalControlTEID uint32
@@ -380,7 +383,9 @@ func (c *Client) CreateSession(ctx context.Context, req CreateSessionRequest) (*
 	c.log.Info("S2b Create Session Response received",
 		"imsi", req.IMSI,
 		"apn", req.APN,
+		"pdn_type", pdnTypeName(result.PDNType),
 		"paa", result.PAA.String(),
+		"paa6", ipString(result.PAA6),
 		"paa_prefix_len", result.PAAPrefixLen,
 		"pgw_control_teid", result.PGWControlTEID,
 		"pgw_control_ip", result.PGWControlIP,
@@ -500,6 +505,9 @@ func (c *Client) createSessionPayload(req CreateSessionRequest, ulKbps, dlKbps, 
 }
 
 func pdnTypeFor(req CreateSessionRequest) uint8 {
+	if req.IPv4v6 {
+		return pdnTypeIPv4v6
+	}
 	if req.IPv6 {
 		return pdnTypeIPv6
 	}
@@ -527,7 +535,9 @@ func (c *Client) parseCreateSessionResponseFor(resp message, localControl, local
 	if err != nil {
 		return nil, err
 	}
-	if cause := parseCause(ies); cause != causeRequestAccepted {
+	cause := parseCause(ies)
+	if cause != causeRequestAccepted && !(pdnType == pdnTypeIPv4v6 &&
+		(cause == causeNewPDNTypeNetworkPreference || cause == causeNewPDNTypeSingleAddrBearer)) {
 		return nil, fmt.Errorf("S2b Create Session rejected cause=%d", cause)
 	}
 	result := &CreateSessionResult{
@@ -545,14 +555,32 @@ func (c *Client) parseCreateSessionResponseFor(resp message, localControl, local
 	if result.ResponseAPCO, err = c.parsePCOIE(ies, ieAPCO); err != nil {
 		return nil, err
 	}
-	if pdnType == pdnTypeIPv6 {
+	granted := pdnType
+	if pdnType == pdnTypeIPv4v6 {
+		// The PGW may assign IPv4v6, or only one family with cause 18/19
+		// (TS 29.274 §8.4, TS 23.401 §5.3.1.1); the PAA type says which.
+		granted = parsePAAType(ies)
+	}
+	switch granted {
+	case pdnTypeIPv4v6:
+		result.PAA = parsePAAIPv4v6(ies)
+		result.PAA6, result.PAAPrefixLen = parsePAAIPv6(ies)
+		if result.PAA == nil || result.PAA6 == nil {
+			return nil, fmt.Errorf("S2b Create Session Response missing IPv4v6 PAA")
+		}
+	case pdnTypeIPv6:
 		result.PAA, result.PAAPrefixLen = parsePAAIPv6(ies)
 		if result.PAA == nil {
 			return nil, fmt.Errorf("S2b Create Session Response missing IPv6 PAA")
 		}
-	} else if result.PAA == nil {
-		return nil, fmt.Errorf("S2b Create Session Response missing IPv4 PAA")
+	case pdnTypeIPv4:
+		if result.PAA == nil {
+			return nil, fmt.Errorf("S2b Create Session Response missing IPv4 PAA")
+		}
+	default:
+		return nil, fmt.Errorf("S2b Create Session Response PAA PDN type %d for a %s request", granted, pdnTypeName(pdnType))
 	}
+	result.PDNType = granted
 	if _, teid, ip, ok := findFTEIDByInterface(ies, ifaceS2BPGWGTPC, 1, 0); ok {
 		result.PGWControlTEID = teid
 		if ip != nil {

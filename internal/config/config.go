@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label.
+// Modified by itskimffs (2026-10), see NOTICE: api.metrics_imsi_label; ikev2.ipv4v6.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -87,6 +87,11 @@ type IKEv2Config struct {
 	// §2.6 COOKIE challenge is required for new IKE_SA_INIT requests.
 	// Default 2048.
 	CookieThreshold int
+	// IPv4v6 sets up an IPv4v6 PDN connection (S2b PDN type IPv4v6, both
+	// addresses in CFG_REPLY, one CHILD SA for both families) when the UE asks
+	// for INTERNAL_IP4_ADDRESS and INTERNAL_IP6_ADDRESS. When false, such a
+	// request gets IPv4 and PDN_TYPE_IPv4_ONLY_ALLOWED. Default true.
+	IPv4v6 bool
 }
 
 type EPDGConfig struct {
@@ -255,6 +260,8 @@ func setValue(cfg *Config, section, key, value string) error {
 			return setInt(value, &cfg.IKEv2.MaxHalfOpenSAs, section, key)
 		case "cookie_threshold":
 			return setInt(value, &cfg.IKEv2.CookieThreshold, section, key)
+		case "ipv4v6":
+			return setBool(value, &cfg.IKEv2.IPv4v6, section, key)
 		}
 	case "logging":
 		switch key {
@@ -382,6 +389,7 @@ func Default() *Config {
 			HalfOpenSATimeout:    30,
 			MaxHalfOpenSAs:       4096,
 			CookieThreshold:      2048,
+			IPv4v6:               true,
 		},
 		SWM: SWMConfig{
 			Proto:                   "sctp",

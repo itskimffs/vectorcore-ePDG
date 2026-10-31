@@ -403,11 +403,13 @@ epdg_bearer_bytes_total{apn="ims",pdn_type="ipv6",qci="1",direction="uplink"} 30
 |---|---|---|
 | `epdg_build_info` | gauge | `version` |
 | `epdg_ike_sas`, `epdg_child_sas` | gauge | – |
-| `epdg_pdn_sessions` | gauge | `apn`, `pdn_type` (`ipv4`/`ipv6`), `imsi` if `metrics_imsi_label` |
+| `epdg_pdn_sessions` | gauge | `apn`, `pdn_type` (`ipv4`/`ipv6`/`ipv4v6`), `imsi` if `metrics_imsi_label` |
 | `epdg_bearers` | gauge | `apn`, `pdn_type`, `qci`, `type` (`default`/`dedicated`), `imsi` if `metrics_imsi_label` |
 | `epdg_bearer_packets_total`, `epdg_bearer_bytes_total` | counter | `apn`, `pdn_type`, `qci`, `direction` (`uplink`/`downlink`) |
 
-- `pdn_type` follows the PAA: IPv4 or IPv6 PDN connection.
+- `pdn_type` follows the PAA: IPv4, IPv6 or IPv4v6 PDN connection.
+  For an IPv4v6 PDN connection `/clients` and `/sessions` show the IPv4
+  address in `ue_ip` and the IPv6 address in `ue_ip6` (omitted otherwise).
 - The default bearer's QCI is the Bearer Level QoS in the Create Session
   Response, or the requested QCI when the PGW leaves it out (it includes it
   only when it differs, TS 29.274 Table 7.2.2-2). Dedicated bearers use the

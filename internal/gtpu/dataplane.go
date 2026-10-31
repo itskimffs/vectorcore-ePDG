@@ -1,5 +1,5 @@
 // Modified by itskimffs (2026-10), see NOTICE: IPv6 PDN connections (inner IPv6, keyed by the UE's /64 prefix),
-// TFT packet filter components per TS 24.008 Table 10.5.162 and uplink TFT rules for IPv6.
+// TFT packet filter components per TS 24.008 Table 10.5.162 and uplink TFT rules for IPv6; IPv4v6 PDN connections.
 // Prometheus metrics: default bearer QCI and traffic per APN, PDN type and QCI (metrics.go).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
@@ -127,6 +127,7 @@ type Session struct {
 	IMSI             string
 	APN              string
 	PAA              net.IP
+	PAA6             net.IP // IPv6 address of an IPv4v6 PDN connection (PAA is then IPv4); nil otherwise
 	LocalGTPUIP      net.IP
 	PGWGTPUIP        net.IP
 	DefaultEBI       uint8
@@ -371,6 +372,14 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 	if paa4 := paa.To4(); paa4 != nil {
 		paa = paa4
 	}
+	var paa6 net.IP
+	if s2bCtx.PAA6 != "" {
+		paa6 = net.ParseIP(s2bCtx.PAA6)
+		if paa6 == nil || paa6.To4() != nil || paa.To4() == nil {
+			return fmt.Errorf("%s: IPv4v6 PDN connection requires an IPv4 PAA and an IPv6 PAA6, got %q and %q",
+				stepValidateInput, s2bCtx.PAA, s2bCtx.PAA6)
+		}
+	}
 	pgw := s2bCtx.PGWUserIP.To4()
 	if pgw == nil {
 		return fmt.Errorf("%s: missing PGW GTP-U IP from S2b Create Session Response", stepValidateInput)
@@ -393,6 +402,7 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		IMSI:             imsi,
 		APN:              apn,
 		PAA:              paa,
+		PAA6:             paa6,
 		LocalGTPUIP:      local,
 		PGWGTPUIP:        pgw,
 		DefaultEBI:       s2bCtx.EBI,
@@ -405,6 +415,7 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		"imsi", imsi,
 		"apn", apn,
 		"paa", paa.String(),
+		"paa6", ipString(paa6),
 		"ebi", b.EBI,
 		"local_rx_teid", b.LocalRXTEID,
 		"remote_tx_teid", b.RemoteTXTEID,
@@ -440,23 +451,31 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		return fail(stepInstallDefaultBearer, fmt.Errorf("local GTP-U RX TEID collision: %d", b.LocalRXTEID))
 	}
 	m.sessionsByID[ds.ID] = ds
-	m.sessionsByPAA[paa.String()] = ds
+	for _, a := range ds.paas() {
+		m.sessionsByPAA[a.String()] = ds
+	}
 	m.bearersByLocalTEID[b.LocalRXTEID] = &BearerRef{SessionID: ds.ID, BearerEBI: b.EBI}
 	m.bearersByRemoteTEID[b.RemoteTXTEID] = &BearerRef{SessionID: ds.ID, BearerEBI: b.EBI}
 	m.mu.Unlock()
 	rb.add(func() { rb.removeSessionState(sessID, paa.String()) })
+	if paa6 != nil {
+		rb.add(func() { rb.removeSessionState(sessID, paa6.String()) })
+	}
 	if m.bpf != nil {
-		if err := m.bpf.AddTEID(b.LocalRXTEID, paa, pgw); err != nil {
+		if err := m.bpf.AddTEID(b.LocalRXTEID, paa, paa6, pgw); err != nil {
 			return fail(stepInstallDefaultBearer, fmt.Errorf("BPF teid_map: %w", err))
 		}
 		teid := b.LocalRXTEID
 		rb.add(func() { _ = m.bpf.RemoveTEID(teid) })
 		if m.tc == nil {
 			// TC uplink not active — route PAA via XDP NIC for policy-based XFRM encrypt.
-			if err := m.addBPFRoute(paa); err != nil {
-				return fail(stepInstallDefaultBearer, fmt.Errorf("BPF PAA route: %w", err))
+			for _, a := range ds.paas() {
+				a := a
+				if err := m.addBPFRoute(a); err != nil {
+					return fail(stepInstallDefaultBearer, fmt.Errorf("BPF PAA route: %w", err))
+				}
+				rb.add(func() { _ = m.removeBPFRoute(a) })
 			}
-			rb.add(func() { _ = m.removeBPFRoute(paa) })
 		}
 	}
 	if m.tc != nil {
@@ -468,18 +487,26 @@ func (m *Manager) AddSession(ctx context.Context, sess *session.Session) error {
 		if err != nil {
 			return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF: S2b interface %q: %w", s2bIfname, err))
 		}
-		if err := m.tc.AddUESession(paa, b.RemoteTXTEID, pgw, local, s2bLink.Attrs().Index); err != nil {
-			return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF ue_session_map: %w", err))
+		// IPv4v6: one UE session per family (ue_session_map and
+		// ue6_session_map), both with the default bearer's uplink TEID.
+		for _, a := range ds.paas() {
+			a := a
+			if err := m.tc.AddUESession(a, b.RemoteTXTEID, pgw, local, s2bLink.Attrs().Index); err != nil {
+				return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF ue_session_map: %w", err))
+			}
+			rb.add(func() { _ = m.tc.RemoveUESession(a) })
 		}
-		rb.add(func() { _ = m.tc.RemoveUESession(paa) })
 		if err := m.syncTCBPFTFTRulesLocked(ds); err != nil {
 			return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF tft_rule_map: %w", err))
 		}
 		// Route PAA via vc-xfrm0: downlink path is XDP decap → kernel → vc-xfrm0 → XFRM encrypt → UE.
-		if err := m.addBPFRoute(paa); err != nil {
-			return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF PAA route: %w", err))
+		for _, a := range ds.paas() {
+			a := a
+			if err := m.addBPFRoute(a); err != nil {
+				return fail(stepInstallDefaultBearer, fmt.Errorf("TC-BPF PAA route: %w", err))
+			}
+			rb.add(func() { _ = m.removeBPFRoute(a) })
 		}
-		rb.add(func() { _ = m.removeBPFRoute(paa) })
 	}
 	sess.Lock()
 	sess.Datapath = &session.DatapathContext{
@@ -535,16 +562,16 @@ func (m *Manager) RemoveSession(ctx context.Context, sess *session.Session) erro
 			}
 			m.log.Info("GTP-U bearer removed", "session_id", sess.ID, "ebi", ebi)
 		}
-		if ds.PAA != nil {
+		for _, a := range ds.paas() {
 			if m.tc != nil {
-				_ = m.tc.RemoveUESession(ds.PAA)
-				_ = m.removeBPFRoute(ds.PAA)
+				_ = m.tc.RemoveUESession(a)
+				_ = m.removeBPFRoute(a)
 			} else if m.bpf != nil {
-				_ = m.removeBPFRoute(ds.PAA)
+				_ = m.removeBPFRoute(a)
 			}
+			delete(m.sessionsByPAA, a.String())
 		}
 		paa = ds.PAA
-		delete(m.sessionsByPAA, ds.PAA.String())
 		delete(m.sessionsByID, sess.ID)
 	}
 	m.mu.Unlock()
@@ -582,7 +609,7 @@ func (m *Manager) AddBearer(_ context.Context, sessionID string, b Bearer) error
 	m.bearersByLocalTEID[b.LocalRXTEID] = &BearerRef{SessionID: sessionID, BearerEBI: b.EBI}
 	m.bearersByRemoteTEID[b.RemoteTXTEID] = &BearerRef{SessionID: sessionID, BearerEBI: b.EBI}
 	if m.bpf != nil {
-		if err := m.bpf.AddTEID(b.LocalRXTEID, ds.PAA, b.PGWGTPUIP); err != nil {
+		if err := m.bpf.AddTEID(b.LocalRXTEID, ds.PAA, ds.PAA6, b.PGWGTPUIP); err != nil {
 			m.log.Warn("BPF teid_map AddTEID failed for dedicated bearer", "teid", b.LocalRXTEID, "error", err)
 		}
 	}
@@ -1198,20 +1225,45 @@ func (m *Manager) syncTCBPFTFTRulesLocked(ds *Session) error {
 	if m.tc == nil || ds == nil {
 		return nil
 	}
-	rules := buildTCBPFTFTRules(ds)
-	if len(rules) > maxTCBPFTFTRules {
-		m.log.Warn("TC-BPF TFT rules truncated", "session_id", ds.ID, "paa", ds.PAA.String(), "rules", len(rules), "max", maxTCBPFTFTRules)
-		rules = rules[:maxTCBPFTFTRules]
+	// IPv4v6: the IPv4 filters go to tft_rule_map, the IPv6 filters to
+	// tft6_rule_map (one rule set per family).
+	for _, paa := range ds.paas() {
+		rules := buildTCBPFTFTRulesFor(ds, paa)
+		if len(rules) > maxTCBPFTFTRules {
+			m.log.Warn("TC-BPF TFT rules truncated", "session_id", ds.ID, "paa", paa.String(), "rules", len(rules), "max", maxTCBPFTFTRules)
+			rules = rules[:maxTCBPFTFTRules]
+		}
+		if err := m.tc.SetTFTRules(paa, rules); err != nil {
+			return fmt.Errorf("TC-BPF TFT sync for session %q: %w", ds.ID, err)
+		}
+		m.log.Info("TC-BPF TFT rules synced", "session_id", ds.ID, "paa", paa.String(), "rules", len(rules))
 	}
-	if err := m.tc.SetTFTRules(ds.PAA, rules); err != nil {
-		return fmt.Errorf("TC-BPF TFT sync for session %q: %w", ds.ID, err)
-	}
-	m.log.Info("TC-BPF TFT rules synced", "session_id", ds.ID, "paa", ds.PAA.String(), "rules", len(rules))
 	return nil
+}
+
+// paas returns the session's PAA and, for an IPv4v6 PDN connection, its IPv6 PAA.
+func (ds *Session) paas() []net.IP {
+	out := make([]net.IP, 0, 2)
+	if ds.PAA != nil {
+		out = append(out, ds.PAA)
+	}
+	if ds.PAA6 != nil {
+		out = append(out, ds.PAA6)
+	}
+	return out
 }
 
 func buildTCBPFTFTRules(ds *Session) []TCBPFTFTRule {
 	if ds == nil {
+		return nil
+	}
+	return buildTCBPFTFTRulesFor(ds, ds.PAA)
+}
+
+// buildTCBPFTFTRulesFor builds the uplink TFT rules of the address family of
+// paa (one of the session's PAAs).
+func buildTCBPFTFTRulesFor(ds *Session, paa net.IP) []TCBPFTFTRule {
+	if ds == nil || paa == nil {
 		return nil
 	}
 	rules := make([]TCBPFTFTRule, 0)
@@ -1232,9 +1284,9 @@ func buildTCBPFTFTRules(ds *Session) []TCBPFTFTRule {
 				RemotePortLo: f.RemotePortLo,
 				RemotePortHi: f.RemotePortHi,
 			}
-			if ds.PAA.To4() != nil {
+			if paa.To4() != nil {
 				if f.RemoteIPv6 != nil {
-					continue // IPv6 filter on an IPv4 PDN connection never matches
+					continue // IPv6 filter for IPv4 traffic never matches
 				}
 				if ip4 := f.RemoteIPv4.To4(); ip4 != nil && len(f.RemoteIPv4Mask) == net.IPv4len {
 					rule.Flags |= tcTFTFlagRemoteIP
@@ -1243,7 +1295,7 @@ func buildTCBPFTFTRules(ds *Session) []TCBPFTFTRule {
 				}
 			} else {
 				if f.RemoteIPv4 != nil {
-					continue // IPv4 filter on an IPv6 PDN connection never matches
+					continue // IPv4 filter for IPv6 traffic never matches
 				}
 				if len(f.RemoteIPv6) == net.IPv6len && len(f.RemoteIPv6Mask) == net.IPv6len {
 					rule.Flags |= tcTFTFlagRemoteIP
@@ -1538,4 +1590,12 @@ func AllocateTEID() (uint32, error) {
 			return teid, nil
 		}
 	}
+}
+
+// ipString renders an optional address for logging ("" when nil).
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }

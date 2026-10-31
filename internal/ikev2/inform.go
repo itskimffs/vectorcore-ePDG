@@ -1,4 +1,4 @@
-// Modified by itskimffs (2026-10), see NOTICE: DPD probe kept and retransmitted with the same Message ID until answered (RFC 7296 §2.1, §2.3, §2.4); traffic selectors for IPv6 PAAs.
+// Modified by itskimffs (2026-10), see NOTICE: DPD probe kept and retransmitted with the same Message ID until answered (RFC 7296 §2.1, §2.3, §2.4); traffic selectors for IPv6 PAAs and IPv4v6 PDN connections.
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
 
@@ -282,20 +282,8 @@ func (s *Server) removeXFRMChildSA(sa *ikeSA) {
 		return
 	}
 
-	var paa net.IP
-	// Try to reconstruct the remote TS from the session PAA.
-	if s.sessions != nil && sa.sessionID != "" {
-		if sess := s.sessions.Get(sa.sessionID); sess != nil {
-			sess.RLock()
-			var paaStr string
-			if sess.S2B != nil {
-				paaStr = sess.S2B.PAA
-			}
-			sess.RUnlock()
-			paa = net.ParseIP(paaStr)
-		}
-	}
-	localTS, remoteTS := paaTrafficSelectors(paa)
+	// Reconstruct the traffic selectors from the session PAA(s).
+	paa, paa6 := s.sessionPAAs(sa.sessionID)
 
 	encrName, integName, integTrunc := childAlgNames(sa.espProp)
 	encrIn, integIn, encrOut, integOut := deriveChildSAKeys(sa.saKey, sa.nonceI, sa.nonceR,
@@ -316,10 +304,9 @@ func (s *Server) removeXFRMChildSA(sa *ikeSA) {
 		NATT:         sa.natT,
 		NATTSrcPort:  nattPort,
 		NATTDstPort:  sa.remoteAddr.Port,
-		LocalTS:      localTS,
-		RemoteTS:     remoteTS,
 		IfID:         xfrm.IfID,
 	}
+	setChildTrafficSelectors(&params, paa, paa6)
 	if err := xfrm.RemoveChildSA(params); err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.log.Warn("removeXFRMChildSA: xfrm remove failed", "err", err, "imsi", sa.imsi)
 	}
@@ -432,19 +419,7 @@ func (s *Server) handleUpdateSA(conn *net.UDPConn, remote *net.UDPAddr, sa *ikeS
 // migrateMobikeXFRM replaces the XFRM CHILD SA outer endpoints.
 // Must be called with sa.mu held.
 func (s *Server) migrateMobikeXFRM(sa *ikeSA, newRemote *net.UDPAddr) error {
-	var paa net.IP
-	if s.sessions != nil && sa.sessionID != "" {
-		if sess := s.sessions.Get(sa.sessionID); sess != nil {
-			sess.RLock()
-			var paaStr string
-			if sess.S2B != nil {
-				paaStr = sess.S2B.PAA
-			}
-			sess.RUnlock()
-			paa = net.ParseIP(paaStr)
-		}
-	}
-	localTS, remoteTS := paaTrafficSelectors(paa)
+	paa, paa6 := s.sessionPAAs(sa.sessionID)
 
 	encrName, integName, integTrunc := childAlgNames(sa.espProp)
 	encrIn, integIn, encrOut, integOut := deriveChildSAKeys(sa.saKey, sa.nonceI, sa.nonceR,
@@ -463,10 +438,9 @@ func (s *Server) migrateMobikeXFRM(sa *ikeSA, newRemote *net.UDPAddr) error {
 		IntTruncBits: integTrunc,
 		NATT:         sa.natT,
 		NATTSrcPort:  nattPort,
-		LocalTS:      localTS,
-		RemoteTS:     remoteTS,
 		IfID:         xfrm.IfID,
 	}
+	setChildTrafficSelectors(&base, paa, paa6)
 
 	oldParams := base
 	oldParams.RemoteIP = sa.remoteAddr.IP

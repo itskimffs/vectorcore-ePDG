@@ -102,3 +102,100 @@ func TestInstallChildSAIPv6InnerOverIPv4(t *testing.T) {
 		t.Fatalf("RemoveChildSA() error = %v", err)
 	}
 }
+
+func ipv4v6ChildSA() ChildSAParams {
+	p := ipv6ChildSA()
+	p.LocalTS6, p.RemoteTS6 = p.LocalTS, p.RemoteTS
+	_, p.LocalTS, _ = net.ParseCIDR("0.0.0.0/0")
+	_, p.RemoteTS, _ = net.ParseCIDR("10.41.201.7/32")
+	return p
+}
+
+func TestBuildPolicySetIPv4v6(t *testing.T) {
+	p := ipv4v6ChildSA()
+	set := buildPolicySet(p, p.LocalIP, p.RemoteIP)
+	if len(set) != 6 {
+		t.Fatalf("buildPolicySet() = %d policies, want 6", len(set))
+	}
+	want := reqidFor(p)
+	if want != 0x0a29c907 {
+		t.Fatalf("reqidFor(IPv4v6) = %#x, want the IPv4 reqid 0x0a29c907", want)
+	}
+	v4, v6 := 0, 0
+	for _, pol := range set {
+		if pol.Tmpls[0].Reqid != want {
+			t.Fatalf("policy %v reqid %#x, want %#x", pol.Dst, pol.Tmpls[0].Reqid, want)
+		}
+		ue := pol.Src
+		if pol.Dir == netlink.XFRM_DIR_OUT {
+			ue = pol.Dst
+		}
+		if ue.IP.To4() != nil {
+			v4++
+		} else {
+			v6++
+		}
+	}
+	if v4 != 3 || v6 != 3 {
+		t.Fatalf("policies: %d IPv4, %d IPv6, want 3 and 3", v4, v6)
+	}
+	in, out := buildSAs(p, p.LocalIP, p.RemoteIP)
+	if in.Selector != nil || out.Selector != nil {
+		t.Fatalf("IPv4v6 SA selectors %v/%v, want none (AF_UNSPEC)", in.Selector, out.Selector)
+	}
+}
+
+// TestInstallChildSAIPv4v6 installs one SA pair for both inner families
+// (XFRM_STATE_AF_UNSPEC) and six policies in a fresh network namespace.
+// Needs root.
+func TestInstallChildSAIPv4v6(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root")
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	orig, err := netns.Get()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer orig.Close()
+	ns, err := netns.New()
+	if err != nil {
+		t.Skipf("netns.New: %v", err)
+	}
+	defer func() { _ = netns.Set(orig); ns.Close() }()
+
+	p := ipv4v6ChildSA()
+	if err := InstallChildSA(p); err != nil {
+		if errors.Is(err, unix.EPROTONOSUPPORT) {
+			t.Skipf("kernel without ESP/XFRM support: %v", err)
+		}
+		t.Fatalf("InstallChildSA() error = %v", err)
+	}
+	states, err := netlink.XfrmStateList(netlink.FAMILY_ALL)
+	if err != nil || len(states) != 2 {
+		t.Fatalf("XfrmStateList = %d states (err %v), want 2", len(states), err)
+	}
+	for _, st := range states {
+		if st.Selector != nil && st.Selector.Dst != nil && !st.Selector.Dst.IP.IsUnspecified() {
+			t.Fatalf("state %#x has selector %v, want none", st.Spi, st.Selector.Dst)
+		}
+		if st.Reqid != reqidFor(p) || st.Ifid != int(IfID) || st.Crypt == nil || st.Auth == nil {
+			t.Fatalf("state %#x: reqid %#x ifid %d crypt %v auth %v", st.Spi, st.Reqid, st.Ifid, st.Crypt, st.Auth)
+		}
+	}
+	pols4, _ := netlink.XfrmPolicyList(netlink.FAMILY_V4)
+	pols6, _ := netlink.XfrmPolicyList(netlink.FAMILY_V6)
+	if len(pols4) != 3 || len(pols6) != 3 {
+		t.Fatalf("policies: %d IPv4, %d IPv6, want 3 and 3", len(pols4), len(pols6))
+	}
+	if err := RemoveChildSA(p); err != nil {
+		t.Fatalf("RemoveChildSA() error = %v", err)
+	}
+	states, _ = netlink.XfrmStateList(netlink.FAMILY_ALL)
+	pols4, _ = netlink.XfrmPolicyList(netlink.FAMILY_V4)
+	pols6, _ = netlink.XfrmPolicyList(netlink.FAMILY_V6)
+	if len(states)+len(pols4)+len(pols6) != 0 {
+		t.Fatalf("after RemoveChildSA: %d states, %d+%d policies left", len(states), len(pols4), len(pols6))
+	}
+}

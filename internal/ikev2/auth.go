@@ -1,6 +1,6 @@
 // Modified by itskimffs (2026-10), see NOTICE: RFC 5998 EAP-only authentication (no CERT/AUTH when the UE sends N(EAP_ONLY_AUTHENTICATION));
 // PDN_TYPE_IPv4_ONLY_ALLOWED Notify (TS 24.302 §7.4.1); IPv6 PDN connections (CFG_REPLY, TS);
-// the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23).
+// the SA follows the UE's IKE_AUTH port for UDP encapsulation (RFC 7296 §2.23); IPv4v6 PDN connections.
 // Default bearer QCI in the S2b context (Prometheus metrics).
 // This file is part of vectorcore-ePDG, licensed under the Apache License,
 // Version 2.0 (see LICENSE).
@@ -65,6 +65,7 @@ const (
 	// both an IPv4 address and an IPv6 prefix but only an IPv4 address is assigned,
 	// the ePDG should add this Notify to the final IKE_AUTH response.
 	notifyPDNTypeIPv4OnlyAllowed uint16 = 41050
+	notifyPDNTypeIPv6OnlyAllowed uint16 = 41051 // TS 24.302 §8.1.2.2
 	// RFC 5998 §5: EAP_ONLY_AUTHENTICATION notify, sent by the initiator in
 	// message 3 when it does not want public-key-based responder auth.
 	notifyEAPOnlyAuthentication uint16 = 16417
@@ -510,7 +511,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 	}
 
 	// S2b CreateSession to obtain the UE's PAA.
-	var paa net.IP
+	var paa, paa6 net.IP // paa6: IPv6 address of an IPv4v6 PDN connection (paa is then IPv4)
 	var s2bResult *s2b.CreateSessionResult
 	if s.s2b != nil {
 		var ambrUL, ambrDL uint64
@@ -548,6 +549,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			Handover:     sa.handoverIP != nil,
 			PGWControlIP: pgwControlIP,
 			IPv6:         sa.wantsIPv6PDN(),
+			IPv4v6:       s.wantsIPv4v6PDN(sa),
 		})
 		cancel()
 		if err != nil {
@@ -558,11 +560,12 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 		}
 		s2bResult = r
 		paa = r.PAA
+		paa6 = r.PAA6
 		s.log.Info("IKE_AUTH final: S2b session created",
-			"imsi", sa.imsi, "paa", paa,
+			"imsi", sa.imsi, "paa", paa, "paa6", paa6,
 			"pgw_ctrl_teid", r.PGWControlTEID, "pgw_user_teid", r.PGWUserTEID,
 			"handover", sa.handoverIP != nil)
-		if sa.wantsIPv6PDN() && r.PAAPrefixLen != paaPrefixLen6 {
+		if (sa.wantsIPv6PDN() || paa6 != nil) && r.PAAPrefixLen != paaPrefixLen6 {
 			s.log.Warn("IKE_AUTH final: unexpected IPv6 prefix length from PGW, using /64",
 				"imsi", sa.imsi, "prefix_len", r.PAAPrefixLen)
 		}
@@ -579,6 +582,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 				_ = sess.Transition(session.StateS2BCreateSessionSent)
 				sess.S2B = &session.S2BContext{
 					PAA:              paa.String(),
+					PAA6:             ipString(paa6),
 					PGWControlTEID:   r.PGWControlTEID,
 					PGWControlIP:     r.PGWControlIP,
 					PGWUserTEID:      r.PGWUserTEID,
@@ -611,8 +615,6 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			sa.espProp.encr.KeyLen(), sa.espProp.integKeyLen())
 		encrName, integName, integTrunc := childAlgNames(sa.espProp)
 
-		localTS, remoteTS := paaTrafficSelectors(paa)
-
 		xfrmParams := xfrm.ChildSAParams{
 			LocalIP:      sa.localIP,
 			RemoteIP:     remote.IP,
@@ -628,10 +630,9 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			NATT:         sa.natT,
 			NATTSrcPort:  nattPort,
 			NATTDstPort:  remote.Port,
-			LocalTS:      localTS,
-			RemoteTS:     remoteTS,
 			IfID:         xfrm.IfID,
 		}
+		setChildTrafficSelectors(&xfrmParams, paa, paa6)
 		if err := xfrm.InstallChildSA(xfrmParams); err != nil {
 			s.log.Error("IKE_AUTH final: XFRM install failed",
 				"err", err, "imsi", sa.imsi, "remote", remote)
@@ -643,7 +644,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 			"outbound_spi", fmt.Sprintf("%08x", sa.peerESPSPI),
 			"encr", encrName, "encr_bits", sa.espProp.encr.keyBits,
 			"integ", integName, "pfs", sa.espProp.dhID(),
-			"paa", paa, "natt", sa.natT)
+			"paa", paa, "paa6", paa6, "natt", sa.natT)
 
 		if s.sessions != nil {
 			if sess := s.sessions.Get(sa.sessionID); sess != nil {
@@ -713,47 +714,7 @@ func (s *Server) handleAuthFinal(conn *net.UDPConn, remote *net.UDPAddr, sa *ike
 		buildESPSAResponse(&inner, sa.espProp, sa.espPropNum, sa.localESPSPI)
 	}
 
-	buildTSResponse(&inner, paa)
-
-	if paa != nil && paa.To4() == nil && sa.cpWantsIP6 {
-		// IPv6 PDN connection: the IPv6 address and the IPv6 attributes the UE asked for.
-		cp := inner.BuildConfiguration(message.CFG_REPLY)
-		cp.ConfigurationAttribute.BuildConfigurationAttribute(
-			message.INTERNAL_IP6_ADDRESS, internalIP6AddressValue(paa))
-		if s2bResult != nil {
-			pcoData := s2bResult.ResponseAPCO
-			if pcoData == nil {
-				pcoData = s2bResult.ResponsePCO
-			}
-			appendIPv6FromPCO(cp, pcoData, sa)
-		}
-	} else if sa.cpWantsIP && paa != nil {
-		cp := inner.BuildConfiguration(message.CFG_REPLY)
-		cp.ConfigurationAttribute.BuildConfigurationAttribute(
-			message.INTERNAL_IP4_ADDRESS, paa.To4())
-		if s2bResult != nil {
-			// PGW returns DNS and P-CSCF in APCO for IMS APNs; fall back to PCO.
-			pcoData := s2bResult.ResponseAPCO
-			if pcoData == nil {
-				pcoData = s2bResult.ResponsePCO
-			}
-			if s.fullCfg != nil {
-				// IPv4 PDN connection: IPv4 DNS and P-CSCF only; IPv6 addresses
-				// requested over S2b are for IPv6 PDN connections.
-				pcoCfg := s.fullCfg.PCO
-				pcoCfg.RequestDNSv6, pcoCfg.RequestPCSCFv6 = false, false
-				appendDNSFromPCO(cp, pcoData, pcoCfg)
-				appendPCSCFFromPCO(cp, pcoData, pcoCfg)
-			}
-		}
-	}
-
-	// TS 24.302 §7.4.1: the UE requested both an IPv4 address and an IPv6 prefix,
-	// but only an IPv4 address is assigned (this ePDG requests PDN type IPv4 on S2b).
-	if sa.cpWantsIP && sa.cpWantsIP6 && paa != nil {
-		inner.BuildNotification(message.TypeNone, notifyPDNTypeIPv4OnlyAllowed, nil, nil)
-		s.log.Info("IKE_AUTH final: PDN_TYPE_IPv4_ONLY_ALLOWED", "imsi", sa.imsi, "apn", sa.apn)
-	}
+	s.buildPDNConfiguration(&inner, sa, paa, paa6, s2bResult)
 
 	// Echo MOBIKE_SUPPORTED if the UE negotiated it (RFC 4555 §2.1).
 	if sa.mobikeEnabled {
@@ -1322,4 +1283,82 @@ func childAlgNames(prop *childProposal) (encrName, integName string, integTruncB
 		integName, integTruncBits = "hmac(sha256)", 128
 	}
 	return
+}
+
+// buildPDNConfiguration adds TSi/TSr, the CFG_REPLY and, when the UE asked for
+// both families but got one, PDN_TYPE_IPv4_ONLY_ALLOWED or
+// PDN_TYPE_IPv6_ONLY_ALLOWED to the final IKE_AUTH response.
+func (s *Server) buildPDNConfiguration(inner *message.IKEPayloadContainer, sa *ikeSA, paa, paa6 net.IP, s2bResult *s2b.CreateSessionResult) {
+	if paa6 != nil {
+		buildTSResponseIPv4v6(inner, paa, paa6)
+	} else {
+		buildTSResponse(inner, paa)
+	}
+
+	if paa6 != nil {
+		// IPv4v6 PDN connection: both addresses, and the IPv4 and IPv6 DNS and
+		// P-CSCF attributes the UE asked for (TS 24.302 §7.2.2, §7.4.1).
+		cp := inner.BuildConfiguration(message.CFG_REPLY)
+		cp.ConfigurationAttribute.BuildConfigurationAttribute(
+			message.INTERNAL_IP4_ADDRESS, paa.To4())
+		cp.ConfigurationAttribute.BuildConfigurationAttribute(
+			message.INTERNAL_IP6_ADDRESS, internalIP6AddressValue(paa6))
+		if s2bResult != nil {
+			pcoData := s2bResult.ResponseAPCO
+			if pcoData == nil {
+				pcoData = s2bResult.ResponsePCO
+			}
+			if s.fullCfg != nil {
+				pcoCfg := s.fullCfg.PCO
+				pcoCfg.RequestDNSv6, pcoCfg.RequestPCSCFv6 = false, false
+				appendDNSFromPCO(cp, pcoData, pcoCfg)
+				appendPCSCFFromPCO(cp, pcoData, pcoCfg)
+			}
+			appendIPv6FromPCO(cp, pcoData, sa)
+		}
+	} else if paa != nil && paa.To4() == nil && sa.cpWantsIP6 {
+		// IPv6 PDN connection: the IPv6 address and the IPv6 attributes the UE asked for.
+		cp := inner.BuildConfiguration(message.CFG_REPLY)
+		cp.ConfigurationAttribute.BuildConfigurationAttribute(
+			message.INTERNAL_IP6_ADDRESS, internalIP6AddressValue(paa))
+		if s2bResult != nil {
+			pcoData := s2bResult.ResponseAPCO
+			if pcoData == nil {
+				pcoData = s2bResult.ResponsePCO
+			}
+			appendIPv6FromPCO(cp, pcoData, sa)
+		}
+	} else if sa.cpWantsIP && paa != nil {
+		cp := inner.BuildConfiguration(message.CFG_REPLY)
+		cp.ConfigurationAttribute.BuildConfigurationAttribute(
+			message.INTERNAL_IP4_ADDRESS, paa.To4())
+		if s2bResult != nil {
+			// PGW returns DNS and P-CSCF in APCO for IMS APNs; fall back to PCO.
+			pcoData := s2bResult.ResponseAPCO
+			if pcoData == nil {
+				pcoData = s2bResult.ResponsePCO
+			}
+			if s.fullCfg != nil {
+				// IPv4 PDN connection: IPv4 DNS and P-CSCF only; IPv6 addresses
+				// requested over S2b are for IPv6 PDN connections.
+				pcoCfg := s.fullCfg.PCO
+				pcoCfg.RequestDNSv6, pcoCfg.RequestPCSCFv6 = false, false
+				appendDNSFromPCO(cp, pcoData, pcoCfg)
+				appendPCSCFFromPCO(cp, pcoData, pcoCfg)
+			}
+		}
+	}
+
+	// TS 24.302 §7.4.1: the UE requested both an IPv4 address and an IPv6 prefix,
+	// but only one family is assigned (ikev2.ipv4v6 off, or the PGW assigned a
+	// single family with cause 18/19).
+	if sa.cpWantsIP && sa.cpWantsIP6 && paa != nil && paa6 == nil {
+		if paa.To4() != nil {
+			inner.BuildNotification(message.TypeNone, notifyPDNTypeIPv4OnlyAllowed, nil, nil)
+			s.log.Info("IKE_AUTH final: PDN_TYPE_IPv4_ONLY_ALLOWED", "imsi", sa.imsi, "apn", sa.apn)
+		} else {
+			inner.BuildNotification(message.TypeNone, notifyPDNTypeIPv6OnlyAllowed, nil, nil)
+			s.log.Info("IKE_AUTH final: PDN_TYPE_IPv6_ONLY_ALLOWED", "imsi", sa.imsi, "apn", sa.apn)
+		}
+	}
 }
