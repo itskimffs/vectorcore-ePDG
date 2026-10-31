@@ -1,3 +1,7 @@
+// Modified by itskimffs (2026-10), see NOTICE: INVALID_IKE_SPI for requests with an unknown IKE SA.
+// This file is part of vectorcore-ePDG, licensed under the Apache License,
+// Version 2.0 (see LICENSE).
+
 package ikev2
 
 // IKEv2 UDP server — listens on port 500 (plain IKE) and port 4500 (NAT-T).
@@ -73,6 +77,8 @@ type Server struct {
 	workers chan struct{}
 	// cookies issues/verifies RFC 7296 §2.6 COOKIE challenges under load.
 	cookies *cookieState
+	// invalidSPILimit bounds INVALID_IKE_SPI responses (invalid_spi.go).
+	invalidSPILimit invalidSPILimiter
 
 	ctx context.Context // cancelled on Close; drives reaperLoop lifetime
 
@@ -352,6 +358,10 @@ func (s *Server) handlePacket(conn *net.UDPConn, remote *net.UDPAddr, pkt []byte
 	hdr, err := message.ParseHeader(pkt)
 	if err != nil {
 		s.log.Debug("IKEv2 bad header", "remote", remote, "err", err)
+		return
+	}
+
+	if s.answerUnknownSPI(conn, remote, hdr, natt) {
 		return
 	}
 
